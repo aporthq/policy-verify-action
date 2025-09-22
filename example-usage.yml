@@ -1,0 +1,59 @@
+# Example usage of APort Action
+name: Example APort Integration
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  # Basic usage with secret
+  basic-verification:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aporthq/github-actions@v1
+        # Uses APORT_AGENT_ID secret automatically
+
+  # Advanced usage with custom configuration
+  advanced-verification:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aporthq/github-actions@v1
+        with:
+          agent-id: ${{ secrets.APORT_AGENT_ID }}
+          policy-pack: "repo.v1"
+          api-base: "https://api.aport.dev"
+          fail-on-violation: true
+          comment-on-pr: true
+
+  # Conditional verification
+  conditional-verification:
+    runs-on: ubuntu-latest
+    if: github.actor != 'dependabot[bot]'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aporthq/github-actions@v1
+        with:
+          agent-id: ${{ secrets.APORT_AGENT_ID }}
+          policy-pack: "enterprise-security"
+
+  # Multiple policy checks
+  multi-policy-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Security policy check
+        uses: aporthq/github-actions@v1
+        with:
+          agent-id: ${{ secrets.APORT_AGENT_ID }}
+          policy-pack: "security.v1"
+          comment-on-pr: false
+
+      - name: Compliance policy check
+        uses: aporthq/github-actions@v1
+        with:
+          agent-id: ${{ secrets.APORT_AGENT_ID }}
+          policy-pack: "compliance.v1"
+          comment-on-pr: true
