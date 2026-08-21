@@ -1,0 +1,189 @@
+[
+  {
+    "name": "plain human user",
+    "expectedClass": "human",
+    "input": {
+      "actor": "uchibeke",
+      "actorType": "User",
+      "headRef": "feature/update-copy",
+      "commits": [
+        {
+          "commit": {
+            "message": "Update landing page copy",
+            "author": { "email": "uchi@example.com" },
+            "committer": { "email": "uchi@example.com" }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "human staging merge",
+    "expectedClass": "human",
+    "input": {
+      "actor": "uchibeke",
+      "actorType": "User",
+      "headRef": "staging",
+      "commits": [
+        {
+          "commit": {
+            "message": "Merge pull request #298 from aporthq/dev",
+            "author": { "email": "5677552+uchibeke@users.noreply.github.com" }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "human employee on agent vendor domain",
+    "expectedClass": "human",
+    "input": {
+      "actor": "human-openai-engineer",
+      "actorType": "User",
+      "headRef": "feature/manual-review",
+      "commits": [
+        {
+          "commit": {
+            "message": "Manual review updates",
+            "author": { "email": "alex@openai.com" }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "dependabot",
+    "expectedClass": "known_bot",
+    "input": {
+      "actor": "dependabot[bot]",
+      "actorType": "Bot",
+      "headRef": "dependabot/npm_and_yarn/example",
+      "commits": []
+    }
+  },
+  {
+    "name": "renovate",
+    "expectedClass": "known_bot",
+    "input": {
+      "actor": "renovate[bot]",
+      "actorType": "Bot",
+      "headRef": "renovate/example",
+      "commits": []
+    }
+  },
+  {
+    "name": "github actions bot",
+    "expectedClass": "known_bot",
+    "input": {
+      "actor": "github-actions[bot]",
+      "actorType": "Bot",
+      "headRef": "automated/update",
+      "commits": []
+    }
+  },
+  {
+    "name": "copilot swe agent bot",
+    "expectedClass": "known_bot",
+    "input": {
+      "actor": "copilot-swe-agent[bot]",
+      "actorType": "Bot",
+      "headRef": "copilot/fix-tests",
+      "commits": []
+    }
+  },
+  {
+    "name": "aport commit trailers",
+    "expectedClass": "coding_agent",
+    "expectedConfidence": "high",
+    "input": {
+      "actor": "uchibeke",
+      "actorType": "User",
+      "headRef": "feature/agent-change",
+      "commits": [
+        {
+          "commit": {
+            "message": "Update policy evaluator\n\nAPort-Session: 35ecbcbe-82aa-4f47-a270-82eb6e35f6d9\nAPort-Decision: dec_01JABC\nAPort-Agent: claude-code"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "claude marker",
+    "expectedClass": "coding_agent",
+    "expectedConfidence": "high",
+    "input": {
+      "actor": "uchibeke",
+      "actorType": "User",
+      "headRef": "feature/docs",
+      "commits": [
+        {
+          "commit": {
+            "message": "Update docs\n\nGenerated with Claude Code"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "cursor branch prefix",
+    "expectedClass": "coding_agent",
+    "expectedConfidence": "medium",
+    "input": {
+      "actor": "uchibeke",
+      "actorType": "User",
+      "headRef": "cursor/fix-auth-flow",
+      "commits": [
+        {
+          "commit": { "message": "Fix auth flow" }
+        }
+      ]
+    }
+  },
+  {
+    "name": "codex automation email",
+    "expectedClass": "coding_agent",
+    "expectedConfidence": "medium",
+    "input": {
+      "actor": "uchibeke",
+      "actorType": "User",
+      "headRef": "feature/codex-update",
+      "commits": [
+        {
+          "commit": {
+            "message": "Patch verifier tests",
+            "author": { "email": "codex-agent@openai.com" }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "claude automation email",
+    "expectedClass": "coding_agent",
+    "expectedConfidence": "medium",
+    "input": {
+      "actor": "uchibeke",
+      "actorType": "User",
+      "headRef": "feature/claude-update",
+      "commits": [
+        {
+          "commit": {
+            "message": "Adjust setup docs",
+            "committer": { "email": "claude-code@anthropic.com" }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "unknown bot",
+    "expectedClass": "unknown_automation",
+    "input": {
+      "actor": "some-new-bot[bot]",
+      "actorType": "Bot",
+      "headRef": "bot/update",
+      "commits": []
+    }
+  }
+]

@@ -1,21 +1,22 @@
-# Simple APort Policy Verification
-# Copy this to your .github/workflows/ directory
+# APort Repository Guard
+# Copy this to .github/workflows/aport-guard.yml
 
-name: APort Policy Check
+name: APort Repository Guard
 on:
   pull_request:
-    types: [opened, synchronize]
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled, review_requested, review_request_removed]
+  pull_request_review:
+    types: [submitted, dismissed]
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: read
 
 jobs:
-  policy-check:
+  aport:
+    name: APort / OAP code.repository.merge.v1
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-
-      - name: APort Policy Verification
-        uses: aporthq/policy-verify-action@v1
-        with:
-          agent-id: ${{ secrets.APORT_AGENT_ID }}
-          policy-pack: "code.repository.merge.v1"
-          fail-on-violation: true
-          comment-on-pr: true
+      - uses: aporthq/policy-verify-action@v1

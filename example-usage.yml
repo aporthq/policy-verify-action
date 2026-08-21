@@ -1,258 +1,69 @@
-# APort Policy Verification - Example Usage
-# Copy these examples to your .github/workflows/ directory
+# APort Repository Guard - Example Usage
 
-# Example 1: Basic Repository Protection
-name: Basic APort Policy Check
+name: APort Repository Guard
 on:
   pull_request:
-    types: [opened, synchronize]
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled, review_requested, review_request_removed]
+  pull_request_review:
+    types: [submitted, dismissed]
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: read
 
 jobs:
-  policy-check:
+  aport:
+    name: APort / OAP code.repository.merge.v1
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-
-      - name: APort Policy Verification
-        uses: aporthq/policy-verify-action@v1
-        with:
-          agent-id: ${{ secrets.APORT_AGENT_ID }}
-          policy-pack: "code.repository.merge.v1"
-          fail-on-violation: true
-          comment-on-pr: true
+      - uses: aporthq/policy-verify-action@v1
 
 ---
-# Example 2: Advanced Configuration
-name: Advanced APort Policy Check
+# Optional: customize protected path globs.
+
+name: APort Repository Guard With Custom Paths
 on:
   pull_request:
-    types: [opened, synchronize, labeled, ready_for_review]
-  workflow_dispatch:
-    inputs:
-      agent_id:
-        description: "Agent ID to verify"
-        required: true
-        type: string
-      policy_pack:
-        description: "Policy pack to use"
-        required: false
-        default: "code.repository.merge.v1"
-        type: string
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled, review_requested, review_request_removed]
+  pull_request_review:
+    types: [submitted, dismissed]
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: read
 
 jobs:
-  policy-check:
+  aport:
+    name: APort / OAP code.repository.merge.v1
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-
-      - name: APort Policy Verification
-        uses: aporthq/policy-verify-action@v1
+      - uses: aporthq/policy-verify-action@v1
         with:
-          agent-id: ${{ github.event.inputs.agent_id || secrets.APORT_AGENT_ID }}
-          policy-pack: ${{ github.event.inputs.policy_pack || 'code.repository.merge.v1' }}
-          api-base: "https://api.aport.io"
-          api-key: ${{ secrets.APORT_API_KEY }}
-          fail-on-violation: true
-          comment-on-pr: true
-          timeout-seconds: 60
+          protected-paths: ".github/workflows/**,package.json,policies/**"
 
 ---
-# Example 3: Multi-Policy Verification
-name: Multi-Policy Security Check
+# Optional: evidence-only mode for local Action development or environments
+# where GitHub OIDC is intentionally unavailable.
+
+name: APort Repository Guard Evidence Only
 on:
   pull_request:
-    types: [opened, synchronize]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: read
 
 jobs:
-  security-policy:
+  aport:
+    name: APort / OAP code.repository.merge.v1
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Security Policy Check
-        uses: aporthq/policy-verify-action@v1
+      - uses: aporthq/policy-verify-action@v1
         with:
-          agent-id: ${{ secrets.APORT_AGENT_ID }}
-          policy-pack: "code.repository.merge.v1"
-          comment-on-pr: false
-          fail-on-violation: true
-
-  compliance-policy:
-    runs-on: ubuntu-latest
-    needs: security-policy
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Compliance Policy Check
-        uses: aporthq/policy-verify-action@v1
-        with:
-          agent-id: ${{ secrets.APORT_AGENT_ID }}
-          policy-pack: "code.repository.merge.v1"
-          comment-on-pr: true
-          fail-on-violation: true
-
----
-# Example 4: Conditional Verification
-name: Conditional Policy Check
-on:
-  pull_request:
-    types: [opened, synchronize]
-
-jobs:
-  policy-check:
-    runs-on: ubuntu-latest
-    # Skip verification for dependabot and other automated actors
-    if: github.actor != 'dependabot[bot]' && github.actor != 'renovate[bot]'
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: APort Policy Verification
-        uses: aporthq/policy-verify-action@v1
-        with:
-          agent-id: ${{ secrets.APORT_AGENT_ID }}
-          policy-pack: "code.repository.merge.v1"
-          fail-on-violation: true
-          comment-on-pr: true
-
----
-# Example 5: Manual Dispatch with Custom Agent
-name: Manual Policy Verification
-on:
-  workflow_dispatch:
-    inputs:
-      agent_id:
-        description: "Agent ID to verify"
-        required: true
-        type: string
-      policy_pack:
-        description: "Policy pack to use"
-        required: false
-        default: "code.repository.merge.v1"
-        type: choice
-        options:
-          - "code.repository.merge.v1"
-          - "code.repository.create.v1"
-      fail_on_violation:
-        description: "Fail workflow on policy violation"
-        required: false
-        default: true
-        type: boolean
-
-jobs:
-  manual-verification:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: APort Policy Verification
-        uses: aporthq/policy-verify-action@v1
-        with:
-          agent-id: ${{ github.event.inputs.agent_id }}
-          policy-pack: ${{ github.event.inputs.policy_pack }}
-          fail-on-violation: ${{ github.event.inputs.fail_on_violation }}
-          comment-on-pr: true
-
----
-# Example 6: Integration with Other Actions
-name: Full CI/CD Pipeline with APort
-on:
-  pull_request:
-    types: [opened, synchronize]
-
-jobs:
-  policy-check:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: APort Policy Verification
-        id: aport
-        uses: aporthq/policy-verify-action@v1
-        with:
-          agent-id: ${{ secrets.APORT_AGENT_ID }}
-          policy-pack: "code.repository.merge.v1"
-          fail-on-violation: true
-          comment-on-pr: true
-
-  security-scan:
-    runs-on: ubuntu-latest
-    needs: policy-check
-    if: steps.aport.outputs.allowed == 'true'
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Run Security Scan
-        run: |
-          echo "Running security scan..."
-          # Add your security scanning logic here
-
-  build-and-test:
-    runs-on: ubuntu-latest
-    needs: policy-check
-    if: steps.aport.outputs.allowed == 'true'
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Build and Test
-        run: |
-          echo "Building and testing..."
-          # Add your build and test logic here
-
----
-# Example 7: Environment-Specific Policies
-name: Environment-Specific Policy Check
-on:
-  pull_request:
-    types: [opened, synchronize]
-
-jobs:
-  policy-check:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Determine Environment
-        id: env
-        run: |
-          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
-            echo "environment=production" >> $GITHUB_OUTPUT
-            echo "policy_pack=code.repository.merge.v1" >> $GITHUB_OUTPUT
-          elif [[ "${{ github.ref }}" == "refs/heads/develop" ]]; then
-            echo "environment=staging" >> $GITHUB_OUTPUT
-            echo "policy_pack=code.repository.merge.v1" >> $GITHUB_OUTPUT
-          else
-            echo "environment=development" >> $GITHUB_OUTPUT
-            echo "policy_pack=code.repository.merge.v1" >> $GITHUB_OUTPUT
-          fi
-
-      - name: APort Policy Verification
-        uses: aporthq/policy-verify-action@v1
-        with:
-          agent-id: ${{ secrets.APORT_AGENT_ID }}
-          policy-pack: ${{ steps.env.outputs.policy_pack }}
-          fail-on-violation: true
-          comment-on-pr: true
-
----
-# Example 8: Custom API Endpoint
-name: Custom API Endpoint Policy Check
-on:
-  pull_request:
-    types: [opened, synchronize]
-
-jobs:
-  policy-check:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: APort Policy Verification
-        uses: aporthq/policy-verify-action@v1
-        with:
-          agent-id: ${{ secrets.APORT_AGENT_ID }}
-          policy-pack: "code.repository.merge.v1"
-          api-base: "https://api-staging.aport.io" # Custom API endpoint
-          api-key: ${{ secrets.APORT_API_KEY }}
-          fail-on-violation: true
-          comment-on-pr: true
-          timeout-seconds: 45
+          mode: evidence-only
