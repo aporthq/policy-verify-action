@@ -1,225 +1,65 @@
-# APort Policy Verification Example Repository
+# APort Repository Guard Example
 
-This repository demonstrates how to use the APort Policy Verification GitHub Action to enforce security policies on pull requests.
+This example shows the free report-only APort Repository Guard workflow.
 
-## 🚀 Quick Start
+It does not require an APort account, API key, manually configured passport, PR comments, or repository write permissions. In default `auto` mode, the Action uses GitHub OIDC to create or reuse a hosted OAP passport for this repository/workflow and records a report-only APort decision.
 
-### 1. Fork this Repository
+## Workflow
 
-Click the "Fork" button to create your own copy of this repository.
-
-### 2. Set up APort Agent
-
-1. Go to [APort Dashboard](https://aport.io)
-2. Create a new agent
-3. Configure the agent with the following settings:
-
-```json
-{
-  "name": "My GitHub Bot",
-  "capabilities": ["code.repository.merge.v1"],
-  "assurance_level": 3,
-  "integrations": {
-    "github": {
-      "allowed_actors": ["my-bot[bot]", "acme-ci"],
-      "allowed_apps": ["my-github-app"]
-    }
-  },
-  "limits": {
-    "max_files_changed": 100,
-    "max_lines_added": 1000,
-    "max_pr_size_kb": 500,
-    "required_reviews": 1
-  }
-}
-```
-
-### 3. Configure GitHub Secrets
-
-Add the following secrets to your repository:
-
-1. Go to **Settings** → **Secrets and variables** → **Actions**
-2. Click **New repository secret**
-3. Add the following secrets:
-
-| Secret Name | Description | Example Value |
-|-------------|-------------|---------------|
-| `APORT_AGENT_ID` | Your APort Agent ID | `ap_1234567890abcdef` |
-| `APORT_API_KEY` | Your APort API Key (optional) | `aport_sk_...` |
-
-### 4. Test the Action
-
-1. Create a new branch
-2. Make some changes
-3. Open a pull request
-4. The action will automatically run and verify your changes
-
-## 🔧 Configuration
-
-### Agent Passport Settings
-
-Configure your agent passport with the following policy settings:
-
-```json
-{
-  "name": "My GitHub Bot",
-  "capabilities": ["code.repository.merge.v1"],
-  "assurance_level": 3,
-  "integrations": {
-    "github": {
-      "allowed_actors": ["your-bot[bot]", "acme-ci"],
-      "allowed_apps": ["your-github-app"]
-    }
-  },
-  "limits": {
-    "max_files_changed": 100,
-    "max_lines_added": 1000,
-    "max_pr_size_kb": 500,
-    "required_reviews": 1
-  }
-}
-```
-
-### Workflow Configuration
-
-The workflow is configured to run on:
-
-- **Pull Request Events:**
-  - `opened` - When a PR is opened
-  - `synchronize` - When new commits are pushed
-  - `labeled` - When labels are added/removed
-  - `ready_for_review` - When PR is marked ready for review
-
-- **Manual Dispatch:**
-  - Can be triggered manually with custom agent ID
-
-## 📊 Policy Enforcement
-
-The action enforces the following policies:
-
-### Repository Safety (code.repository.merge.v1)
-
-- **Allowed Repositories** - Only specified repositories
-- **Branch Protection** - Changes must go through proper review
-- **File Size Limits** - Prevent large file uploads
-- **GitHub Actor Validation** - Verify the GitHub actor is authorized
-- **GitHub App Validation** - Verify the GitHub app is authorized
-
-### Example Policy Violations
-
-The action will fail if:
-
-- The GitHub actor is not in the `allowed_actors` list
-- The GitHub app is not in the `allowed_apps` list
-- Too many files are changed (exceeds `max_files_changed`)
-- Too many lines are added (exceeds `max_lines_added`)
-- Required reviews are not met
-
-## 🚨 Troubleshooting
-
-### Common Issues
-
-1. **"Agent not found" error**
-   - Verify `APORT_AGENT_ID` secret is correct
-   - Check agent exists in APort dashboard
-
-2. **"Policy violation" error**
-   - Review agent passport configuration
-   - Check if GitHub actor is in `allowed_actors`
-   - Verify policy limits are appropriate
-
-3. **"API error" error**
-   - Check network connectivity
-   - Verify API endpoint is accessible
-   - Review rate limits
-
-### Debug Mode
-
-To enable debug logging, modify the workflow:
+Create `.github/workflows/aport-guard.yml`:
 
 ```yaml
-- name: APort policy verification
-  env:
-    APORT_API_BASE: https://api.aport.io
-    APORT_AGENT_ID: ${{ secrets.APORT_AGENT_ID }}
-    DEBUG: true  # Add this line
-```
-
-## 📚 Examples
-
-### Basic Usage
-
-```yaml
-name: APort Policy Check
+name: APort Repository Guard
 on:
   pull_request:
-    types: [opened, synchronize]
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled, review_requested, review_request_removed]
+  pull_request_review:
+    types: [submitted, dismissed]
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: read
 
 jobs:
-  policy-check:
+  aport:
+    name: APort / OAP code.repository.merge.v1
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-      
-      - name: APort Policy Verification
-        uses: aporthq/policy-verify-action@v1
-        with:
-          agent-id: ${{ secrets.APORT_AGENT_ID }}
-          policy-pack: 'code.repository.merge.v1'
-          fail-on-violation: true
-          comment-on-pr: true
+      - uses: aporthq/policy-verify-action@v1
 ```
 
-### Advanced Usage
+Do not use `pull_request_target` for this report-only workflow. It does not need repository secrets and does not need `pull-requests: write`.
+
+## What You Get
+
+- Actor classification: `human`, `known_bot`, `coding_agent`, or `unknown_automation`.
+- Attribution signals from APort commit trailers, known bot slugs, conservative agent markers, agent-domain automation emails, and branch prefixes.
+- Report-only structural findings for protected paths, `pull_request_target`, and workflow write-permission changes.
+- A hosted `ci_time` APort decision by default, or `unattributed` evidence-only provenance when hosted OIDC is unavailable.
+- A zero-exit workflow that is safe to add before enforcement is enabled.
+
+## Protected Paths
+
+The default protected path set covers workflows, package manifests, APort policy surfaces, and common build config files. You can override it:
 
 ```yaml
-name: Advanced APort Policy Check
-on:
-  pull_request:
-    types: [opened, synchronize, labeled, ready_for_review]
-  workflow_dispatch:
-    inputs:
-      agent_id:
-        description: 'Agent ID to verify'
-        required: true
-
-jobs:
-  policy-check:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      
-      - name: APort Policy Verification
-        uses: aporthq/policy-verify-action@v1
-        with:
-          agent-id: ${{ github.event.inputs.agent_id || secrets.APORT_AGENT_ID }}
-          policy-pack: 'code.repository.merge.v1'
-          api-base: 'https://api.aport.io'
-          fail-on-violation: true
-          comment-on-pr: true
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+- uses: aporthq/policy-verify-action@v1
+  with:
+    protected-paths: ".github/workflows/**,package.json,policies/**"
 ```
 
-## 🤝 Contributing
+## Moving to Enforcement
 
-1. Fork this repository
-2. Create a feature branch
-3. Make your changes
-4. Submit a pull request
+This Action is intentionally post-PR and report-only. To create pre-action authorization records, install APort guardrails in the developer's coding agent so tool calls produce signed decisions before files, shell commands, or GitHub actions run.
 
-## 📄 License
+## Evidence-Only Opt-Out
 
-MIT License - see LICENSE file for details.
+Use this for local Action development or environments where hosted verification is intentionally disabled:
 
-## 🆘 Support
-
-- 📖 [APort Documentation](https://docs.aport.io)
-- 💬 [Discord Community](https://discord.gg/aport)
-- 🐛 [Issue Tracker](https://github.com/aporthq/policy-verify-action/issues)
-- 📧 [Email Support](mailto:support@aport.io)
-
-## 🔗 Related
-
-- [APort Dashboard](https://aport.io)
-- [Policy Verify Action](https://github.com/aporthq/policy-verify-action)
-- [APort Documentation](https://docs.aport.io/docs)
+```yaml
+- uses: aporthq/policy-verify-action@v1
+  with:
+    mode: evidence-only
+```

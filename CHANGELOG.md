@@ -63,6 +63,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Reframed the first public slice as report-only agent attribution and repository provenance.
+- Removed required APort account, passport, API key, hosted verifier call, failing enforcement, and default PR comments from the free Action path.
+- The Action now writes a GitHub job summary and exits 0.
+
+### Added
+- Conservative PR actor classification: `human`, `known_bot`, `coding_agent`, and `unknown_automation`.
+- APort commit trailer recognition for `APort-Session`, `APort-Decision`, and `APort-Agent`.
+- Report-only structural findings for protected paths, `pull_request_target`, and workflow write-permission escalation.
+- Fixture-driven tests with real APortHQ PR payloads and zero false `coding_agent` classifications for human-authored fixtures.
+
 ### Planned Features
 - Support for additional policy packs
 - Enhanced error reporting and debugging

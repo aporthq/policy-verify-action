@@ -1,14 +1,13 @@
 {
   "name": "aport-policy-verify-action",
   "version": "1.0.0",
-  "description": "Verify pull requests against APort agent policies for enhanced security",
+  "description": "Report-only agent attribution and repository provenance for pull requests",
   "main": "action.yml",
   "scripts": {
-    "test": "node mock-api-server.js",
-    "test:api": "./test-api.sh",
-    "test:local": "./test-local.sh",
+    "test": "node test/attribution.test.js && node test/glob.test.js && node test/policy.test.js && node test/structural.test.js && node test/context.test.js && node test/github.test.js && node test/aport.test.js && node test/index.test.js && node test/summary.test.js",
+    "test:fixtures": "node test/attribution.test.js",
     "lint": "echo 'No linting configured for GitHub Actions'",
-    "validate": "echo 'Validating action.yml...' && node -e \"require('yaml').parse(require('fs').readFileSync('action.yml', 'utf8')); console.log('✅ action.yml is valid YAML')\""
+    "validate": "ruby -e \"require 'yaml'; YAML.load_file('action.yml'); puts 'action.yml is valid YAML'\""
   },
   "repository": {
     "type": "git",
@@ -34,19 +33,15 @@
   "engines": {
     "node": ">=16.0.0"
   },
-  "devDependencies": {
-    "yaml": "^2.3.4"
-  },
   "files": [
     "action.yml",
     "README.md",
+    "fixtures",
+    "src",
+    "test",
     "LICENSE",
     "CHANGELOG.md",
     "example-usage.yml",
-    "simple-example.yml",
-    "test-workflow.yml",
-    "test-api.sh",
-    "test-local.sh",
-    "mock-api-server.js"
+    "simple-example.yml"
   ]
 }
