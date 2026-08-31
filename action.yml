@@ -1,5 +1,5 @@
 name: "APort Repository Guard"
-description: "Report-only agent attribution and repository provenance for pull requests"
+description: "APort AI agent passport guardrails for GitHub: hosted OAP decisions, PR attribution, and protected-path checks"
 author: "APort Team"
 branding:
   icon: "shield"

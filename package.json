@@ -1,7 +1,7 @@
 {
   "name": "aport-policy-verify-action",
   "version": "1.0.0",
-  "description": "Report-only agent attribution and repository provenance for pull requests",
+  "description": "APort AI agent passport guardrails for GitHub: hosted OAP decisions, PR attribution, and protected-path checks",
   "main": "action.yml",
   "scripts": {
     "test": "node test/attribution.test.js && node test/glob.test.js && node test/policy.test.js && node test/structural.test.js && node test/context.test.js && node test/github.test.js && node test/aport.test.js && node test/index.test.js && node test/summary.test.js",
@@ -16,6 +16,12 @@
   "keywords": [
     "github-actions",
     "aport",
+    "oap",
+    "open-agent-passport",
+    "ai-agent-passport",
+    "agent-guardrails",
+    "github-security",
+    "github-actions-security",
     "policy",
     "verification",
     "security",
@@ -29,7 +35,7 @@
   "bugs": {
     "url": "https://github.com/aporthq/policy-verify-action/issues"
   },
-  "homepage": "https://github.com/aporthq/policy-verify-action#readme",
+  "homepage": "https://aport.io/quickstart/github",
   "engines": {
     "node": ">=16.0.0"
   },
