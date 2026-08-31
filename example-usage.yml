@@ -1,4 +1,6 @@
 # APort Repository Guard - Example Usage
+# APort AI agent passport guardrails for GitHub.
+# Docs: https://aport.io/quickstart/github
 
 name: APort Repository Guard
 on:

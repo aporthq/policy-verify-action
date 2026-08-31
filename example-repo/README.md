@@ -4,6 +4,8 @@ This example shows the free report-only APort Repository Guard workflow.
 
 It does not require an APort account, API key, manually configured passport, PR comments, or repository write permissions. In default `auto` mode, the Action uses GitHub OIDC to create or reuse a hosted OAP passport for this repository/workflow and records a report-only APort decision.
 
+Start from [aport.io](https://aport.io), the [GitHub quickstart](https://aport.io/quickstart/github), or the guide to [securing GitHub Actions for AI coding agents](https://aport.io/blog/secure-github-actions-ai-coding-agents-protected-paths).
+
 ## Workflow
 
 Create `.github/workflows/aport-guard.yml`:
@@ -32,11 +34,15 @@ jobs:
 
 Do not use `pull_request_target` for this report-only workflow. It does not need repository secrets and does not need `pull-requests: write`.
 
+`id-token: write` is required for hosted APort OIDC. APort reports newly added OIDC token permission as a warning so it is visible during rollout, but it does not treat OIDC as repository write access. Broad workflow permissions such as `write-all`, `contents: write`, `actions: write`, and `pull-requests: write` remain high-severity findings.
+
 ## What You Get
 
 - Actor classification: `human`, `known_bot`, `coding_agent`, or `unknown_automation`.
 - Attribution signals from APort commit trailers, known bot slugs, conservative agent markers, agent-domain automation emails, and branch prefixes.
 - Report-only structural findings for protected paths, `pull_request_target`, and workflow write-permission changes.
+- High-confidence suspicious payload findings for encoded execution or remote shell execution introduced in sensitive workflow, action, build-config, policy, verifier, package, or script surfaces.
+- High-severity findings when GitHub cannot provide patch/content evidence for sensitive execution or configuration surfaces.
 - A hosted `ci_time` APort decision by default, or `unattributed` evidence-only provenance when hosted OIDC is unavailable.
 - A zero-exit workflow that is safe to add before enforcement is enabled.
 
