@@ -4,10 +4,10 @@
   "description": "APort AI agent passport guardrails for GitHub: hosted OAP decisions, PR attribution, and protected-path checks",
   "main": "action.yml",
   "scripts": {
-    "test": "node test/attribution.test.js && node test/glob.test.js && node test/policy.test.js && node test/structural.test.js && node test/context.test.js && node test/github.test.js && node test/aport.test.js && node test/index.test.js && node test/summary.test.js",
+    "test": "node test/run.js",
     "test:fixtures": "node test/attribution.test.js",
     "lint": "echo 'No linting configured for GitHub Actions'",
-    "validate": "ruby -e \"require 'yaml'; YAML.load_file('action.yml'); puts 'action.yml is valid YAML'\""
+    "validate": "ruby -e \"require 'yaml'; ['action.yml', '.github/workflows/aport-guard.yml', '.github/workflows/release.yml'].each { |file| YAML.load_file(file); puts \\\"#{file} is valid YAML\\\" }\""
   },
   "repository": {
     "type": "git",
