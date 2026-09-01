@@ -14,6 +14,7 @@ const {
   repositoryPolicyFindings,
   resolveProtectedPaths,
 } = require("./policy");
+const { emitRunLog } = require("./logging");
 const { renderSummary } = require("./summary");
 const { detectStructuralFindings } = require("./structural");
 
@@ -143,13 +144,22 @@ async function main() {
   writeOutput("outcome", verification.decision?.outcome || "");
   writeOutput("structural-findings", JSON.stringify(structuralFindings));
 
-  if (
-    shouldFailWorkflow(
-      configuredMode,
-      verification,
-      structuralFindings,
-    )
-  ) {
+  const willFail = shouldFailWorkflow(
+    configuredMode,
+    verification,
+    structuralFindings,
+  );
+  emitRunLog({
+    repository: process.env.GITHUB_REPOSITORY || "",
+    prNumber: pr.number || "",
+    configuredMode,
+    verification,
+    structuralFindings,
+    warnings,
+    willFail,
+  });
+
+  if (willFail) {
     process.exitCode = 1;
   }
 }

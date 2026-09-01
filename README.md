@@ -52,6 +52,10 @@ permissions:
 jobs:
   aport:
     name: APort / OAP code.repository.merge.v1
+    if: >-
+      github.event_name != 'pull_request_review' ||
+      github.event.action == 'dismissed' ||
+      github.event.review.state != 'commented'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
