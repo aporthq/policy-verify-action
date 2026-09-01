@@ -59,7 +59,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: aporthq/policy-verify-action@v1.0.2
+      - uses: aporthq/policy-verify-action@v1
 ```
 
 The Action writes to `$GITHUB_STEP_SUMMARY`. It does not request `pull-requests: write` and does not comment on PRs by default, so it is safe for fork PRs and easy to try.

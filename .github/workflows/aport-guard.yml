@@ -22,7 +22,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: APort Repository Guard
-        uses: aporthq/policy-verify-action@v1.0.2
+        uses: aporthq/policy-verify-action@v1
         with:
           mode: hosted
           protected-paths: ".github/workflows/**,action.yml,package.json,src/**,test/**,fixtures/**"
