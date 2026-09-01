@@ -1,6 +1,7 @@
 const assert = require("assert");
 const {
   buildVerifyContext,
+  compactStructuralFindingsForVerify,
   makeIdempotencyKey,
   normalizeEventAction,
 } = require("../src/context");
@@ -50,6 +51,8 @@ const context = buildVerifyContext({
     {
       code: "OAP.REPO.PROTECTED_PATH_TOUCHED",
       severity: "warning",
+      message: "Protected repository paths changed.",
+      paths: [".github/workflows/deploy.yml", "functions/api/verify/index.ts"],
     },
   ],
 });
@@ -62,10 +65,13 @@ assert.equal(context.sha, "merge1234567890abcdef1234567890abcdef123456");
 assert.equal(context.head_sha, "1234567890abcdef1234567890abcdef12345678");
 assert.equal(context.lines_added, 13);
 assert.equal(context.lines_removed, 2);
-assert.deepEqual(context.files_changed, ["src/index.js", "README.md"]);
+assert.equal(context.files_changed, undefined);
 assert.equal(context.authorization.provider, "github_actions_oidc");
 assert.equal(context.authorization.require_oidc, true);
 assert.equal(context.evidence.structural_findings[0].code, "OAP.REPO.PROTECTED_PATH_TOUCHED");
+assert.equal(context.evidence.structural_findings[0].message, "Protected repository paths changed.");
+assert.equal(context.evidence.structural_findings[0].path_count, 2);
+assert.equal(context.evidence.structural_findings[0].paths, undefined);
 assert.equal(context.evidence.repository_policy.hash, "sha256:policy");
 assert.equal(context.evidence.pull_request_head_sha, "1234567890abcdef1234567890abcdef12345678");
 assert.equal(context.evidence.evidence_format, "aport.github.pr.v1");
@@ -129,7 +135,7 @@ const literalPathContext = buildVerifyContext({
   attribution: { class: "human", confidence: "medium" },
 });
 
-assert.deepEqual(literalPathContext.files_changed, [
+assert.deepEqual(literalPathContext.evidence.files_changed, [
   " src/payload.js",
   "src/trailing.js ",
 ]);
@@ -147,7 +153,7 @@ const renamedContext = buildVerifyContext({
   attribution: { class: "human", confidence: "medium" },
 });
 
-assert.deepEqual(renamedContext.files_changed, [
+assert.deepEqual(renamedContext.evidence.files_changed, [
   "src/safe/config.js",
   ".github/workflows/deploy.yml",
 ]);
@@ -162,12 +168,46 @@ const cappedContext = buildVerifyContext({
   attribution: { class: "coding_agent", confidence: "high" },
 });
 
-assert(cappedContext.files_changed.length < 260);
+assert.equal(cappedContext.files_changed, undefined);
+assert(cappedContext.evidence.files_changed.length < 260);
 const cappedFinding = cappedContext.evidence.structural_findings.find(
   (finding) => finding.code === "OAP.REPO.FILE_EVIDENCE_CAPPED",
 );
 assert(cappedFinding);
 assert.equal(cappedFinding.severity, "high");
+assert(
+  Buffer.byteLength(JSON.stringify({ context: cappedContext }), "utf8") <
+    10 * 1024,
+);
+
+const compactedFindings = compactStructuralFindingsForVerify([
+  {
+    code: "OAP.REPO.SUSPICIOUS_OBFUSCATION",
+    severity: "high",
+    message: "Suspicious obfuscated code was introduced.",
+    paths: Array.from({ length: 500 }, (_, index) => `src/${index}.js`),
+    actions: ["actions/checkout@v4"],
+    patterns: ["eval-base64-decoder", "remote-shell-pipe"],
+    details: {
+      files_truncated: true,
+      warning: "x".repeat(500),
+      nested: { ignored: true },
+    },
+  },
+]);
+
+assert.deepEqual(compactedFindings[0], {
+  code: "OAP.REPO.SUSPICIOUS_OBFUSCATION",
+  severity: "high",
+  message: "Suspicious obfuscated code was introduced.",
+  path_count: 500,
+  action_count: 1,
+  patterns: ["eval-base64-decoder", "remote-shell-pipe"],
+  details: {
+    files_truncated: true,
+    warning: "x".repeat(300),
+  },
+});
 
 assert.equal(
   makeIdempotencyKey({

@@ -416,6 +416,60 @@ assert(
   ),
 );
 
+const customProtectedSourceObfuscationFindings = detectStructuralFindings({
+  protectedPaths: ["src/**"],
+  files: [
+    {
+      filename: "src/index.js",
+      patch:
+        "+module.exports = Fun" +
+        "ction(Buffer.from('Y29uc29sZS5sb2coMSk=', 'base64').toString())",
+    },
+  ],
+});
+assert(
+  customProtectedSourceObfuscationFindings.find(
+    (finding) => finding.code === "OAP.REPO.SUSPICIOUS_OBFUSCATION",
+  ),
+);
+
+const missingCustomProtectedSourcePatchFindings = detectStructuralFindings({
+  protectedPaths: ["src/**"],
+  files: [{ filename: "src/index.js" }],
+});
+assert(
+  missingCustomProtectedSourcePatchFindings.find(
+    (finding) =>
+      finding.code === "OAP.REPO.SUSPICIOUS_CONTENT_DIFF_UNAVAILABLE",
+  ),
+);
+
+const deletionOnlyCustomProtectedPatchFindings = detectStructuralFindings({
+  protectedPaths: ["src/**"],
+  files: [
+    {
+      filename: "src/legacy.js",
+      status: "removed",
+      patch: [
+        "@@ -1,2 +0,0 @@",
+        "-const legacy = true;",
+        "-module.exports = legacy;",
+      ].join("\n"),
+    },
+  ],
+});
+assert(
+  deletionOnlyCustomProtectedPatchFindings.find(
+    (finding) => finding.code === "OAP.REPO.PROTECTED_PATH_TOUCHED",
+  ),
+);
+assert(
+  !deletionOnlyCustomProtectedPatchFindings.find(
+    (finding) =>
+      finding.code === "OAP.REPO.SUSPICIOUS_CONTENT_DIFF_UNAVAILABLE",
+  ),
+);
+
 const benignProtectedConfigFindings = detectStructuralFindings({
   files: [
     {

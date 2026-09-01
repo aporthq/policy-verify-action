@@ -109,9 +109,12 @@ function isWorkflow(path) {
   );
 }
 
-function isSuspiciousContentPath(path) {
+function isSuspiciousContentPath(path, additionalPaths = []) {
   if (isDocumentationPath(path)) return false;
-  return matchesAny(DEFAULT_SUSPICIOUS_CONTENT_PATHS, path);
+  return (
+    matchesAny(DEFAULT_SUSPICIOUS_CONTENT_PATHS, path) ||
+    matchesAny(additionalPaths, path)
+  );
 }
 
 function isDocumentationPath(path) {
@@ -163,7 +166,11 @@ function detectStructuralFindings({
     });
   }
 
-  const suspiciousFindings = detectSuspiciousContentFindings(files, fileContents);
+  const suspiciousFindings = detectSuspiciousContentFindings(
+    files,
+    fileContents,
+    protectedPaths,
+  );
   findings.push(...suspiciousFindings);
 
   const policyTouched = uniquePaths(
@@ -424,16 +431,25 @@ function permissionsBlockFindings(source) {
   return result;
 }
 
-function detectSuspiciousContentFindings(files = [], fileContents = {}) {
+function detectSuspiciousContentFindings(
+  files = [],
+  fileContents = {},
+  additionalSuspiciousPaths = [],
+) {
   const findings = [];
 
   for (const file of files) {
     const paths = filePathCandidates(file);
-    const suspiciousPaths = paths.filter(isSuspiciousContentPath);
+    const suspiciousPaths = paths.filter((path) =>
+      isSuspiciousContentPath(path, additionalSuspiciousPaths),
+    );
     if (!suspiciousPaths.length) continue;
 
-    const source = suspiciousSourceForFile(file, fileContents[paths[0]]);
-    if (!source) {
+    const sourceEvidence = suspiciousSourceEvidenceForFile(
+      file,
+      fileContentForPaths(paths, fileContents),
+    );
+    if (!sourceEvidence.available) {
       const missingRequiredEvidencePaths = suspiciousPaths.filter(
         requiresSuspiciousContentEvidence,
       );
@@ -449,7 +465,7 @@ function detectSuspiciousContentFindings(files = [], fileContents = {}) {
       continue;
     }
 
-    const patternCodes = findSuspiciousContentMatches(source).map(
+    const patternCodes = findSuspiciousContentMatches(sourceEvidence.source).map(
       (match) => match.code,
     );
     if (!patternCodes.length) continue;
@@ -471,15 +487,36 @@ function requiresSuspiciousContentEvidence(path) {
   return !matchesAny(SUSPICIOUS_CONTENT_EVIDENCE_OPTIONAL_PATHS, path);
 }
 
-function suspiciousSourceForFile(file, fullContent) {
-  if (file?.patch) {
-    return file.patch
-      .split(/\r?\n/)
-      .filter((line) => line.startsWith("+") && !line.startsWith("+++"))
-      .map((line) => line.slice(1))
-      .join("\n");
+function fileContentForPaths(paths, fileContents = {}) {
+  for (const path of paths) {
+    if (fileContents[path] !== undefined && fileContents[path] !== null) {
+      return fileContents[path];
+    }
   }
-  return String(fullContent || "");
+  return undefined;
+}
+
+function suspiciousSourceEvidenceForFile(file, fullContent) {
+  if (typeof file?.patch === "string") {
+    return {
+      available: true,
+      source: file.patch
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith("+") && !line.startsWith("+++"))
+        .map((line) => line.slice(1))
+        .join("\n"),
+    };
+  }
+  if (fullContent !== undefined && fullContent !== null) {
+    return {
+      available: true,
+      source: String(fullContent),
+    };
+  }
+  return {
+    available: false,
+    source: "",
+  };
 }
 
 function findSuspiciousContentMatches(source) {

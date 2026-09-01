@@ -36,6 +36,8 @@ function buildVerifyContext({
         },
       ]
     : structuralFindings;
+  const verifyStructuralFindings =
+    compactStructuralFindingsForVerify(effectiveStructuralFindings);
   const filesChanged = fileEvidence.paths;
   const linesAdded = files.reduce((sum, file) => sum + Number(file.additions || 0), 0);
   const linesRemoved = files.reduce((sum, file) => sum + Number(file.deletions || 0), 0);
@@ -68,7 +70,7 @@ function buildVerifyContext({
       lines_removed: linesRemoved,
       actor_class: attribution.class,
       confidence: attribution.confidence,
-      structural_findings: effectiveStructuralFindings,
+      structural_findings: verifyStructuralFindings,
       ...(headSha ? { pull_request_head_sha: headSha } : {}),
       ...(isMergeGroup && mergeGroup.head_sha ? { merge_group_head_sha: mergeGroup.head_sha } : {}),
       ...(isMergeGroup && mergeGroup.base_sha ? { merge_group_base_sha: mergeGroup.base_sha } : {}),
@@ -83,11 +85,65 @@ function buildVerifyContext({
     head_branch: pr.head?.ref || refNameFromGitRef(mergeGroup.head_ref) || process.env.GITHUB_HEAD_REF || undefined,
     sha,
     ...(headSha ? { head_sha: headSha } : {}),
-    files_changed: filesChanged,
     lines_added: linesAdded,
     lines_removed: linesRemoved,
     github_actor: process.env.GITHUB_ACTOR || event.sender?.login || "",
   };
+}
+
+function compactStructuralFindingsForVerify(findings = []) {
+  if (!Array.isArray(findings)) return [];
+
+  return findings
+    .filter((finding) => finding && typeof finding === "object")
+    .map((finding) => {
+      const compact = {};
+
+      copyStringField(compact, finding, "code");
+      copyStringField(compact, finding, "severity");
+      copyStringField(compact, finding, "message", 500);
+
+      if (Array.isArray(finding.paths)) compact.path_count = finding.paths.length;
+      if (Array.isArray(finding.actions)) {
+        compact.action_count = finding.actions.length;
+      }
+      if (Array.isArray(finding.patterns)) {
+        compact.patterns = finding.patterns
+          .filter((pattern) => typeof pattern === "string")
+          .slice(0, 10);
+      }
+
+      const details = compactDetailsForVerify(finding.details);
+      if (Object.keys(details).length > 0) compact.details = details;
+
+      return compact;
+    });
+}
+
+function copyStringField(target, source, field, maxLength = 200) {
+  if (typeof source[field] !== "string") return;
+  target[field] = source[field].slice(0, maxLength);
+}
+
+function compactDetailsForVerify(details) {
+  if (!details || typeof details !== "object" || Array.isArray(details)) {
+    return {};
+  }
+
+  const compact = {};
+  for (const [key, value] of Object.entries(details)) {
+    if (typeof key !== "string" || key.length > 80) continue;
+    if (typeof value === "string") {
+      compact[key] = value.slice(0, 300);
+    } else if (
+      typeof value === "number" ||
+      typeof value === "boolean" ||
+      value === null
+    ) {
+      compact[key] = value;
+    }
+  }
+  return compact;
 }
 
 function normalizeEventAction(event) {
@@ -120,4 +176,9 @@ function makeIdempotencyKey({ repository, action, prNumber, sha, runId }) {
     .slice(0, 200);
 }
 
-module.exports = { buildVerifyContext, normalizeEventAction, makeIdempotencyKey };
+module.exports = {
+  buildVerifyContext,
+  compactStructuralFindingsForVerify,
+  normalizeEventAction,
+  makeIdempotencyKey,
+};
