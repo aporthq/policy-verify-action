@@ -67,8 +67,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reframed the first public slice as report-only agent attribution and repository provenance.
 - Removed required APort account, passport, API key, hosted verifier call, failing enforcement, and default PR comments from the free Action path.
 - The Action now writes a GitHub job summary and exits 0.
+- Hosted verification payloads now send compact structural findings and avoid duplicate changed-file evidence, keeping repository guard requests within the verifier's hot-path request budget.
 
 ### Added
+- Automated release workflow for `aporthq/policy-verify-action` that tags the next patch release after a synced PR is merged and updates major/minor convenience tags.
 - Conservative PR actor classification: `human`, `known_bot`, `coding_agent`, and `unknown_automation`.
 - APort commit trailer recognition for `APort-Session`, `APort-Decision`, and `APort-Agent`.
 - Report-only structural findings for protected paths, `pull_request_target`, workflow write-permission escalation, and OIDC token permission changes.

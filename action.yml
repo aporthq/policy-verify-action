@@ -39,10 +39,10 @@ outputs:
     description: "Classification confidence"
     value: ${{ steps.aport.outputs.confidence }}
   provenance:
-    description: "Authorization provenance for this report-only slice"
+    description: "Authorization provenance for this repository verification"
     value: ${{ steps.aport.outputs.provenance }}
   structural-findings:
-    description: "JSON array of report-only structural findings"
+    description: "JSON array of structural repository findings"
     value: ${{ steps.aport.outputs.structural-findings }}
   decision-id:
     description: "APort decision ID when hosted or local-json verification returns one"
