@@ -33,7 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: aporthq/policy-verify-action@v1.0.2
+      - uses: aporthq/policy-verify-action@v1
 ```
 
 Do not use `pull_request_target` for this report-only workflow. It does not need repository secrets and does not need `pull-requests: write`.
@@ -55,7 +55,7 @@ Do not use `pull_request_target` for this report-only workflow. It does not need
 The default protected path set covers workflows, package manifests, APort policy surfaces, and common build config files. You can override it:
 
 ```yaml
-- uses: aporthq/policy-verify-action@v1.0.2
+- uses: aporthq/policy-verify-action@v1
   with:
     protected-paths: ".github/workflows/**,package.json,policies/**"
 ```
@@ -69,7 +69,7 @@ This Action is intentionally post-PR and report-only. To create pre-action autho
 Use this for local Action development or environments where hosted verification is intentionally disabled:
 
 ```yaml
-- uses: aporthq/policy-verify-action@v1.0.2
+- uses: aporthq/policy-verify-action@v1
   with:
     mode: evidence-only
 ```

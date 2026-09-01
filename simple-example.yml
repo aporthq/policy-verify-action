@@ -25,4 +25,4 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: aporthq/policy-verify-action@v1.0.2
+      - uses: aporthq/policy-verify-action@v1
