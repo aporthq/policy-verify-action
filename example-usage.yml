@@ -24,7 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: aporthq/policy-verify-action@v1.0.2
+      - uses: aporthq/policy-verify-action@v1
 
 ---
 # Optional: customize protected path globs.
@@ -51,7 +51,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: aporthq/policy-verify-action@v1.0.2
+      - uses: aporthq/policy-verify-action@v1
         with:
           protected-paths: ".github/workflows/**,package.json,policies/**"
 
@@ -74,6 +74,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: aporthq/policy-verify-action@v1.0.2
+      - uses: aporthq/policy-verify-action@v1
         with:
           mode: evidence-only
