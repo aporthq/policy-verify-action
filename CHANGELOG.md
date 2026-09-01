@@ -71,8 +71,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Conservative PR actor classification: `human`, `known_bot`, `coding_agent`, and `unknown_automation`.
 - APort commit trailer recognition for `APort-Session`, `APort-Decision`, and `APort-Agent`.
-- Report-only structural findings for protected paths, `pull_request_target`, and workflow write-permission escalation.
+- Report-only structural findings for protected paths, `pull_request_target`, workflow write-permission escalation, and OIDC token permission changes.
+- High-severity suspicious payload findings for encoded execution and remote shell execution introduced in sensitive workflow, action, build-config, policy, verifier, package, or script surfaces.
+- High-severity missing-evidence findings when GitHub omits patch/content data for sensitive execution or configuration surfaces.
 - Fixture-driven tests with real APortHQ PR payloads and zero false `coding_agent` classifications for human-authored fixtures.
+
+### Security
+- Treat `id-token: write` as GitHub OIDC authentication permission, not repository write access. Newly introduced OIDC permission is still reported for review, while broad workflow write permissions remain high-severity.
 
 ### Planned Features
 - Support for additional policy packs
@@ -93,7 +98,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Support
 
 For support and questions:
-- 📖 [Documentation](https://docs.aport.io)
-- 💬 [Discord Community](https://discord.gg/aport)
+- 📖 [APort](https://aport.io)
+- 🚀 [GitHub Actions quickstart](https://aport.io/quickstart/github)
+- 🛡️ [GitHub security guide](https://aport.io/blog/secure-github-actions-ai-coding-agents-protected-paths)
 - 🐛 [Issue Tracker](https://github.com/aporthq/policy-verify-action/issues)
 - 📧 [Email Support](mailto:support@aport.io)
