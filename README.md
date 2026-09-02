@@ -27,7 +27,7 @@ Learn more at [aport.io](https://aport.io), the [GitHub Actions quickstart](http
   - missing patch/content evidence for sensitive execution or configuration surfaces
 - Reads optional `.aport/policy.yaml` or `.aport/policy.yml` from the trusted base branch, never from the PR head.
 - Uses base-branch policy for Action-side protected paths and pinned-action reporting; hosted policy decisions still go through APort Verify.
-- In default `auto` mode, requests GitHub OIDC, creates or reuses a hosted repository/workflow-scoped OAP passport, then calls APort Verify at `/api/verify/policy/code.repository.merge.v1`.
+- In default `auto` mode, requests GitHub OIDC, creates or reuses a hosted repository-scoped OAP passport, then calls APort Verify at `/api/verify/policy/code.repository.merge.v1`.
 - Verifies hosted decision signatures against APort's OAP JWKS before using the result.
 - Supports `local-json` mode for a trusted OAP passport file; this posts the passport to the same verifier without hosted decision persistence.
 - Supports `evidence-only` mode for attribution and structural findings with no APort network calls.
@@ -43,6 +43,9 @@ on:
     types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled, review_requested, review_request_removed]
   pull_request_review:
     types: [submitted, dismissed]
+  push:
+    branches:
+      - main
 
 permissions:
   id-token: write
@@ -63,6 +66,16 @@ jobs:
 ```
 
 The Action writes to `$GITHUB_STEP_SUMMARY`. It does not request `pull-requests: write` and does not comment on PRs by default, so it is safe for fork PRs and easy to try.
+
+The summary includes a small Porter trust card, deterministic APort status, structural findings, signed decision metadata when available, and a copyable README badge. After the workflow is passing, add the badge to your repository README so contributors can see that APort Repository Guard is active:
+
+```md
+[![APort Repository Guard](https://github.com/OWNER/REPO/actions/workflows/aport-guard.yml/badge.svg)](https://github.com/OWNER/REPO/actions/workflows/aport-guard.yml)
+```
+
+For teams that want the badge to mean "this repo is actually protected," make the workflow a required check in GitHub branch protection or rulesets and use `mode: hosted` once report-only results are clean.
+
+The `push` trigger is a detection layer for direct pushes to protected branches. It runs after the push lands, so use GitHub rulesets or branch protection to prevent direct pushes and make this Action a required PR check for merge-time enforcement.
 
 `id-token: write` is required for hosted GitHub OIDC. APort reports newly added OIDC token permission as a warning so teams can review cloud trust policy changes, but it is not treated as repository write permission. Broad repository permissions such as `write-all`, `contents: write`, `actions: write`, or `pull-requests: write` remain high-severity findings.
 
