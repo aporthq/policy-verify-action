@@ -2,7 +2,7 @@
 
 This example shows the free report-only APort Repository Guard workflow.
 
-It does not require an APort account, API key, manually configured passport, PR comments, or repository write permissions. In default `auto` mode, the Action uses GitHub OIDC to create or reuse a hosted OAP passport for this repository/workflow and records a report-only APort decision.
+It does not require an APort account, API key, manually configured passport, PR comments, or repository write permissions. In default `auto` mode, the Action uses GitHub OIDC to create or reuse a hosted OAP passport for this repository and records a report-only APort decision.
 
 Start from [aport.io](https://aport.io), the [GitHub quickstart](https://aport.io/quickstart/github), or the guide to [securing GitHub Actions for AI coding agents](https://aport.io/blog/secure-github-actions-ai-coding-agents-protected-paths).
 
@@ -17,6 +17,9 @@ on:
     types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled, review_requested, review_request_removed]
   pull_request_review:
     types: [submitted, dismissed]
+  push:
+    branches:
+      - main
 
 permissions:
   id-token: write
@@ -38,6 +41,8 @@ jobs:
 
 Do not use `pull_request_target` for this report-only workflow. It does not need repository secrets and does not need `pull-requests: write`.
 
+The `push` trigger is direct-push detection, not direct-push prevention. Pair it with GitHub branch protection or rulesets when `main` should only change through reviewed PRs.
+
 `id-token: write` is required for hosted APort OIDC. APort reports newly added OIDC token permission as a warning so it is visible during rollout, but it does not treat OIDC as repository write access. Broad workflow permissions such as `write-all`, `contents: write`, `actions: write`, and `pull-requests: write` remain high-severity findings.
 
 ## What You Get
@@ -49,6 +54,17 @@ Do not use `pull_request_target` for this report-only workflow. It does not need
 - High-severity findings when GitHub cannot provide patch/content evidence for sensitive execution or configuration surfaces.
 - A hosted `ci_time` APort decision by default, or `unattributed` evidence-only provenance when hosted OIDC is unavailable.
 - A zero-exit workflow that is safe to add before enforcement is enabled.
+- A branded job summary with Porter, the APort Repository Guard mascot, plus a copyable README badge.
+
+## Share the Guard
+
+After the workflow is passing, add the badge to your repository README:
+
+```md
+[![APort Repository Guard](https://github.com/OWNER/REPO/actions/workflows/aport-guard.yml/badge.svg)](https://github.com/OWNER/REPO/actions/workflows/aport-guard.yml)
+```
+
+For a badge that means "protected," make the APort job a required check in GitHub branch protection or rulesets and use hosted enforcement once report-only output is clean.
 
 ## Protected Paths
 

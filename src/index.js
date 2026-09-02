@@ -124,6 +124,11 @@ async function main() {
   });
   if (verification.warning) warnings.push(verification.warning);
 
+  const willFail = shouldFailWorkflow(
+    configuredMode,
+    verification,
+    structuralFindings,
+  );
   const summary = renderSummary({
     repository: process.env.GITHUB_REPOSITORY || "",
     prNumber: pr.number || "",
@@ -133,7 +138,10 @@ async function main() {
     repositoryPolicy,
     verification,
     configuredMode,
+    eventName: process.env.GITHUB_EVENT_NAME || "",
+    workflowRef: process.env.GITHUB_WORKFLOW_REF || "",
     warnings,
+    willFail,
   });
 
   writeSummary(summary);
@@ -144,11 +152,6 @@ async function main() {
   writeOutput("outcome", verification.decision?.outcome || "");
   writeOutput("structural-findings", JSON.stringify(structuralFindings));
 
-  const willFail = shouldFailWorkflow(
-    configuredMode,
-    verification,
-    structuralFindings,
-  );
   emitRunLog({
     repository: process.env.GITHUB_REPOSITORY || "",
     prNumber: pr.number || "",
