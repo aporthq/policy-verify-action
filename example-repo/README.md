@@ -4,7 +4,7 @@ This example shows the free report-only APort Repository Guard workflow.
 
 It does not require an APort account, API key, manually configured passport, PR comments, or repository write permissions. In default `auto` mode, the Action uses GitHub OIDC to create or reuse a hosted OAP passport for this repository and records a report-only APort decision.
 
-Start from [aport.io](https://aport.io), the [GitHub quickstart](https://aport.io/quickstart/github), or the guide to [securing GitHub Actions for AI coding agents](https://aport.io/blog/secure-github-actions-ai-coding-agents-protected-paths).
+Start from [aport.io](https://aport.io), the [GitHub quickstart](https://aport.io/quickstart/#github), or the guide to [securing GitHub Actions for AI coding agents](https://aport.io/blog/secure-github-actions-ai-coding-agents-protected-paths).
 
 ## Workflow
 
@@ -49,7 +49,7 @@ The `push` trigger is direct-push detection, not direct-push prevention. Pair it
 
 - Actor classification: `human`, `known_bot`, `coding_agent`, or `unknown_automation`.
 - Attribution signals from APort commit trailers, known bot slugs, conservative agent markers, agent-domain automation emails, and branch prefixes.
-- Report-only structural findings for protected paths, `pull_request_target`, and workflow write-permission changes.
+- Structural findings for protected paths, `pull_request_target`, and workflow write-permission changes. Protected paths warn by default and can be made blocking with `block-protected-paths: true`; high-confidence workflow risks are always high severity.
 - High-confidence suspicious payload findings for encoded execution or remote shell execution introduced in sensitive workflow, action, build-config, policy, verifier, package, or script surfaces.
 - High-severity findings when GitHub cannot provide patch/content evidence for sensitive execution or configuration surfaces.
 - A hosted `ci_time` APort decision by default, or `unattributed` evidence-only provenance when hosted OIDC is unavailable.
@@ -73,6 +73,8 @@ The default protected path set covers workflows, package manifests, APort policy
 ```yaml
 - uses: aporthq/policy-verify-action@v1
   with:
+    mode: hosted
+    block-protected-paths: true
     protected-paths: ".github/workflows/**,package.json,policies/**"
 ```
 

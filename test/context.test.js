@@ -16,6 +16,65 @@ delete process.env.GITHUB_EVENT_NAME;
 assert.equal(normalizeEventAction({ action: "opened" }), "pr.create");
 process.env.GITHUB_EVENT_NAME = "push";
 assert.equal(normalizeEventAction({}), "repo.push");
+const pushContext = buildVerifyContext({
+  event: {
+    ref: "refs/heads/main",
+    before: "1111111111111111111111111111111111111111",
+    after: "2222222222222222222222222222222222222222",
+    sender: {
+      login: "octocat",
+    },
+  },
+  files: [{ filename: "src/index.js", additions: 1, deletions: 0 }],
+  attribution: {
+    class: "human",
+    confidence: "medium",
+  },
+});
+assert.equal(pushContext.action, "repo.push");
+assert.equal(pushContext.evidence.event_name, "push");
+assert.equal(pushContext.evidence.event_action, "push");
+
+process.env.GITHUB_SHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+const mergePushContext = buildVerifyContext({
+  event: {
+    ref: "refs/heads/main",
+    before: "1111111111111111111111111111111111111111",
+    after: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    sender: {
+      login: "octocat",
+    },
+  },
+  files: [{ filename: "src/merged.js", additions: 2, deletions: 1 }],
+  attribution: {
+    class: "human",
+    confidence: "high",
+  },
+  repositoryAction: "pr.merge",
+  pushClassification: {
+    push_classification: "merged_pull_request",
+    pull_request_number: 42,
+    pull_request_merged: true,
+    merge_commit_sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    merge_base_branch: "main",
+  },
+});
+
+assert.equal(mergePushContext.action, "pr.merge");
+assert.equal(mergePushContext.evidence.event_name, "push");
+assert.equal(mergePushContext.evidence.event_action, "push.merge");
+assert.equal(mergePushContext.evidence.pull_request_number, 42);
+assert.equal(mergePushContext.evidence.pull_request_merged, true);
+assert.equal(
+  mergePushContext.evidence.push_classification,
+  "merged_pull_request",
+);
+assert.equal(
+  mergePushContext.evidence.merge_commit_sha,
+  "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+);
+assert.equal(mergePushContext.evidence.merge_base_branch, "main");
+process.env.GITHUB_SHA = "merge1234567890abcdef1234567890abcdef123456";
 process.env.GITHUB_EVENT_NAME = "pull_request";
 
 const context = buildVerifyContext({
