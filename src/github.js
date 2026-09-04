@@ -325,7 +325,13 @@ async function getPushData(event, request = githubRequest) {
   const [owner, repo] = repository.split("/");
   const before = String(event.before || "");
   const after = String(event.after || process.env.GITHUB_SHA || "");
+  const branch = branchFromGitRef(event.ref || process.env.GITHUB_REF || "");
   const warnings = [];
+  const classification = await classifyPushAction(
+    { owner, repo, after, branch },
+    request,
+  );
+  warnings.push(...classification.warnings);
 
   if (!owner || !repo || !isSha(before) || !isSha(after) || isZeroSha(before)) {
     const fallback = pushPayloadEvidence(event);
@@ -334,6 +340,8 @@ async function getPushData(event, request = githubRequest) {
     );
     return {
       ...fallback,
+      repositoryAction: classification.action,
+      pushClassification: classification.evidence,
       evidenceTruncated: {
         files: true,
         commits: true,
@@ -351,6 +359,8 @@ async function getPushData(event, request = githubRequest) {
     warnings.push("Using push event payload and marking evidence incomplete.");
     return {
       ...fallback,
+      repositoryAction: classification.action,
+      pushClassification: classification.evidence,
       evidenceTruncated: {
         files: true,
         commits: true,
@@ -378,12 +388,69 @@ async function getPushData(event, request = githubRequest) {
   return {
     files,
     commits,
+    repositoryAction: classification.action,
+    pushClassification: classification.evidence,
     evidenceTruncated: {
       files: filesIncomplete,
       commits: commitsIncomplete,
       maxPages: 0,
     },
     warnings,
+  };
+}
+
+async function classifyPushAction({ owner, repo, after, branch }, request = githubRequest) {
+  const directPush = {
+    action: "repo.push",
+    evidence: {
+      push_classification: "direct",
+    },
+    warnings: [],
+  };
+
+  if (!owner || !repo || !isSha(after) || !branch) {
+    return directPush;
+  }
+
+  const pullsPath = `/repos/${owner}/${repo}/commits/${encodeURIComponent(after)}/pulls?per_page=10`;
+  const result = await request(pullsPath);
+  if (!result.ok) {
+    return {
+      action: "repo.push",
+      evidence: {
+        push_classification: "unknown",
+        push_classification_reason: "associated_pr_lookup_failed",
+      },
+      warnings: [
+        `Could not resolve pushed commit PR association from GitHub API (${result.status}): ${result.error || "unknown error"}; treating push as direct.`,
+      ],
+    };
+  }
+
+  const pulls = Array.isArray(result.data) ? result.data : [];
+  const mergedPullRequest = pulls.find((pullRequest) => (
+    Number.isFinite(Number(pullRequest?.number)) &&
+    pullRequest?.state === "closed" &&
+    typeof pullRequest?.merged_at === "string" &&
+    pullRequest.merged_at.length > 0 &&
+    pullRequest?.base?.ref === branch &&
+    pullRequest?.merge_commit_sha === after
+  ));
+
+  if (!mergedPullRequest) {
+    return directPush;
+  }
+
+  return {
+    action: "pr.merge",
+    evidence: {
+      push_classification: "merged_pull_request",
+      pull_request_number: Number(mergedPullRequest.number),
+      pull_request_merged: true,
+      merge_commit_sha: after,
+      merge_base_branch: branch,
+    },
+    warnings: [],
   };
 }
 
@@ -428,6 +495,12 @@ function isSha(value) {
 
 function isZeroSha(value) {
   return /^0{40}$/.test(value);
+}
+
+function branchFromGitRef(ref) {
+  const value = String(ref || "");
+  if (value.startsWith("refs/heads/")) return value.slice("refs/heads/".length);
+  return value;
 }
 
 async function githubRequestAllPages(path, request = githubRequest, maxPages = 20) {
@@ -482,4 +555,5 @@ module.exports = {
   githubRequestAllPages,
   getMergeGroupData,
   getPushData,
+  classifyPushAction,
 };

@@ -30,6 +30,10 @@ inputs:
     description: "Comma-separated protected path globs. Defaults cover workflows, package manifests, and APort policy surfaces."
     required: false
     default: ""
+  block-protected-paths:
+    description: "Fail hosted verification when protected paths are changed. Keep false for low-friction rollout; set true for security-critical repos."
+    required: false
+    default: "false"
 
 outputs:
   actor-class:
@@ -64,5 +68,6 @@ runs:
         APORT_OIDC_AUDIENCE: ${{ inputs.oidc-audience }}
         APORT_PASSPORT_PATH: ${{ inputs.passport-path }}
         APORT_PROTECTED_PATHS: ${{ inputs.protected-paths }}
+        APORT_BLOCK_PROTECTED_PATHS: ${{ inputs.block-protected-paths }}
         GITHUB_TOKEN: ${{ github.token }}
       run: node "$GITHUB_ACTION_PATH/src/index.js"

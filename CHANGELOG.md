@@ -101,7 +101,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 For support and questions:
 - 📖 [APort](https://aport.io)
-- 🚀 [GitHub Actions quickstart](https://aport.io/quickstart/github)
+- 🚀 [GitHub Actions quickstart](https://aport.io/quickstart/#github)
 - 🛡️ [GitHub security guide](https://aport.io/blog/secure-github-actions-ai-coding-agents-protected-paths)
 - 🐛 [Issue Tracker](https://github.com/aporthq/policy-verify-action/issues)
 - 📧 [Email Support](mailto:support@aport.io)

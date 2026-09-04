@@ -10,7 +10,7 @@ This first slice answers a narrow question that scanners do not answer:
 
 APort Repository Guard does not replace `zizmor`, StepSecurity, Socket, Semgrep, Trivy, GitHub Advanced Security, Dependabot, or GitHub rulesets. It complements them by making agent authorship and authorization provenance visible.
 
-Learn more at [aport.io](https://aport.io), the [GitHub Actions quickstart](https://aport.io/quickstart/github), and the APort guide to [securing GitHub Actions for AI coding agents](https://aport.io/blog/secure-github-actions-ai-coding-agents-protected-paths).
+Learn more at [aport.io](https://aport.io), the [GitHub Actions quickstart](https://aport.io/quickstart/#github), and the APort guide to [securing GitHub Actions for AI coding agents](https://aport.io/blog/secure-github-actions-ai-coding-agents-protected-paths).
 
 ## What It Does Today
 
@@ -117,6 +117,7 @@ Structural checks are deterministic repository-safety evidence, not a general ma
 | `oidc-audience` | `aport.io` | GitHub OIDC audience expected by the APort API. Only change this for private or staging APort deployments. |
 | `passport-path` | `.aport/passport.json` | Trusted OAP passport JSON path for `local-json` mode. The Action reads it from the trusted base/push ref, not from PR-head checkout content. |
 | `protected-paths` | empty | Extra comma-separated protected path globs for Action-side evidence. |
+| `block-protected-paths` | `false` | Escalate protected-path changes from warning to high severity. Use with explicit `mode: hosted` for security-critical repos after rollout. |
 
 ## Modes
 
@@ -130,6 +131,8 @@ Structural checks are deterministic repository-safety evidence, not a general ma
 Use `evidence-only` when running a local Action source from a checked-out PR head. Use `auto` or `hosted` from a pinned published Action version.
 
 Hosted mode treats a missing, fallback, or invalid APort decision signature as `OAP.DECISION.SIGNATURE_INVALID`. Default `auto` mode falls back to labelled evidence-only reporting; explicit `hosted` mode fails so teams do not mistake missing hosted evidence for a verified check.
+
+Protected paths are warning-level by default to keep first-time setup low-friction. Security-critical repositories should set `block-protected-paths: true` so workflow, policy, package, or verifier changes fail closed in hosted mode.
 
 ## Outputs
 

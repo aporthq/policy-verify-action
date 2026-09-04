@@ -7,14 +7,25 @@ function buildVerifyContext({
   structuralFindings = [],
   repositoryPolicy,
   evidenceTruncated = {},
+  repositoryAction,
+  pushClassification,
 }) {
   const pr = event.pull_request || (event.number && event.head && event.base ? event : {});
   const mergeGroup = event.merge_group || {};
-  const action = normalizeEventAction(event);
+  const action = repositoryAction || normalizeEventAction(event);
   const eventName = process.env.GITHUB_EVENT_NAME || "";
-  const eventAction = String(event.action || "");
+  const eventAction =
+    eventName === "push" && action === "pr.merge"
+      ? "push.merge"
+      : eventName === "push"
+        ? "push"
+        : String(event.action || "");
   const repository = process.env.GITHUB_REPOSITORY || "";
   const isMergeGroup = eventName === "merge_group" || Boolean(event.merge_group);
+  const isMergePush =
+    eventName === "push" &&
+    pushClassification?.push_classification === "merged_pull_request";
+  const pushPullRequestNumber = Number(pushClassification?.pull_request_number);
   const sha = process.env.GITHUB_SHA || mergeGroup.head_sha || pr.head?.sha || "";
   const headSha = pr.head?.sha || "";
   const fileEvidence = collectChangedFileEvidence(files);
@@ -61,8 +72,12 @@ function buildVerifyContext({
       evidence_format: "aport.github.pr.v1",
       event_name: eventName,
       event_action: eventAction,
-      pull_request_number: pr.number || undefined,
-      pull_request_merged: Boolean(pr.merged),
+      pull_request_number:
+        pr.number ||
+        (Number.isFinite(pushPullRequestNumber)
+          ? pushPullRequestNumber
+          : undefined),
+      pull_request_merged: isMergePush ? true : Boolean(pr.merged),
       files_analyzed: !Boolean(evidenceTruncated.files),
       commits_analyzed: !Boolean(evidenceTruncated.commits),
       files_changed: filesChanged,
@@ -76,6 +91,7 @@ function buildVerifyContext({
       ...(isMergeGroup && mergeGroup.base_sha ? { merge_group_base_sha: mergeGroup.base_sha } : {}),
       ...(isMergeGroup && mergeGroup.head_ref ? { merge_group_head_ref: mergeGroup.head_ref } : {}),
       ...(isMergeGroup && mergeGroup.base_ref ? { merge_group_base_ref: mergeGroup.base_ref } : {}),
+      ...compactPushClassificationForVerify(pushClassification),
       ...(repositoryPolicy ? { repository_policy: repositoryPolicy } : {}),
     },
     repository,
@@ -89,6 +105,18 @@ function buildVerifyContext({
     lines_removed: linesRemoved,
     github_actor: process.env.GITHUB_ACTOR || event.sender?.login || "",
   };
+}
+
+function compactPushClassificationForVerify(classification) {
+  if (!classification || typeof classification !== "object") return {};
+
+  const compact = {};
+  copyStringField(compact, classification, "push_classification", 80);
+  copyStringField(compact, classification, "push_classification_reason", 120);
+  copyStringField(compact, classification, "merge_commit_sha", 40);
+  copyStringField(compact, classification, "merge_base_branch", 120);
+
+  return compact;
 }
 
 function compactStructuralFindingsForVerify(findings = []) {
