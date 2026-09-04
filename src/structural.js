@@ -23,6 +23,15 @@ const DEFAULT_PROTECTED_PATHS = [
   "policies/**",
 ];
 
+const CONTROL_PLANE_MUTATION_PATHS = [
+  ".github/workflows/**",
+  ".github/workflow-templates/**",
+  ".github/workflows-templates/**",
+  ".github/actions/**",
+  ".aport/policy.yaml",
+  ".aport/policy.yml",
+];
+
 const DEFAULT_SUSPICIOUS_CONTENT_PATHS = [
   ".github/workflows/**",
   ".github/workflow-templates/**",
@@ -109,6 +118,10 @@ function isWorkflow(path) {
   );
 }
 
+function isControlPlaneMutationPath(path) {
+  return matchesAny(CONTROL_PLANE_MUTATION_PATHS, path);
+}
+
 function isSuspiciousContentPath(path, additionalPaths = []) {
   if (isDocumentationPath(path)) return false;
   return (
@@ -130,6 +143,7 @@ function detectStructuralFindings({
   files = [],
   fileContents = {},
   protectedPaths = DEFAULT_PROTECTED_PATHS,
+  blockProtectedPaths = false,
   requirePinnedActions = false,
   evidenceTruncated = {},
 } = {}) {
@@ -158,9 +172,10 @@ function detectStructuralFindings({
     ),
   );
   if (protectedTouched.length) {
+    const touchesControlPlane = protectedTouched.some(isControlPlaneMutationPath);
     findings.push({
       code: "OAP.REPO.PROTECTED_PATH_TOUCHED",
-      severity: "warning",
+      severity: blockProtectedPaths || touchesControlPlane ? "high" : "warning",
       message: "Protected repository paths changed.",
       paths: protectedTouched,
     });

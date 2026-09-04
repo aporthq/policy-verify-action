@@ -488,6 +488,55 @@ assert(
     (finding) => finding.code === "OAP.REPO.SUSPICIOUS_OBFUSCATION",
   ),
 );
+const benignProtectedConfigFinding = benignProtectedConfigFindings.find(
+  (finding) => finding.code === "OAP.REPO.PROTECTED_PATH_TOUCHED",
+);
+assert.equal(benignProtectedConfigFinding.severity, "warning");
+
+const guardWorkflowFindings = detectStructuralFindings({
+  blockProtectedPaths: false,
+  files: [
+    {
+      filename: ".github/workflows/aport-guard.yml",
+      patch: "+          block-protected-paths: false",
+    },
+  ],
+});
+const guardWorkflowFinding = guardWorkflowFindings.find(
+  (finding) => finding.code === "OAP.REPO.PROTECTED_PATH_TOUCHED",
+);
+assert(guardWorkflowFinding);
+assert.equal(guardWorkflowFinding.severity, "high");
+
+const repositoryPolicyConfigFindings = detectStructuralFindings({
+  blockProtectedPaths: false,
+  files: [
+    {
+      filename: ".aport/policy.yaml",
+      patch: "+github:\n+  block_protected_paths: false",
+    },
+  ],
+});
+const repositoryPolicyConfigFinding = repositoryPolicyConfigFindings.find(
+  (finding) => finding.code === "OAP.REPO.PROTECTED_PATH_TOUCHED",
+);
+assert(repositoryPolicyConfigFinding);
+assert.equal(repositoryPolicyConfigFinding.severity, "high");
+
+const blockingProtectedConfigFindings = detectStructuralFindings({
+  blockProtectedPaths: true,
+  files: [
+    {
+      filename: "web/next.config.js",
+      patch: "+module.exports = { poweredByHeader: false };",
+    },
+  ],
+});
+const blockingProtectedConfigFinding = blockingProtectedConfigFindings.find(
+  (finding) => finding.code === "OAP.REPO.PROTECTED_PATH_TOUCHED",
+);
+assert(blockingProtectedConfigFinding);
+assert.equal(blockingProtectedConfigFinding.severity, "high");
 
 const protectedDocsFindings = detectStructuralFindings({
   files: [

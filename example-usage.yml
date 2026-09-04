@@ -1,6 +1,6 @@
 # APort Repository Guard - Example Usage
 # APort AI agent passport guardrails for GitHub.
-# Docs: https://aport.io/quickstart/github
+# Docs: https://aport.io/quickstart/#github
 
 name: APort Repository Guard
 on:
@@ -59,6 +59,8 @@ jobs:
     steps:
       - uses: aporthq/policy-verify-action@v1
         with:
+          mode: hosted
+          block-protected-paths: true
           protected-paths: ".github/workflows/**,package.json,policies/**"
 
 ---

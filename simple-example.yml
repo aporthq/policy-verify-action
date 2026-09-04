@@ -1,6 +1,6 @@
 # APort Repository Guard
 # APort AI agent passport guardrails for GitHub.
-# Docs: https://aport.io/quickstart/github
+# Docs: https://aport.io/quickstart/#github
 # Copy this to .github/workflows/aport-guard.yml
 
 name: APort Repository Guard
@@ -29,3 +29,5 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: aporthq/policy-verify-action@v1
+        with:
+          mode: auto

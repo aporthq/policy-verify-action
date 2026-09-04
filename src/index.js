@@ -25,6 +25,10 @@ function parseList(value) {
     .filter(Boolean);
 }
 
+function parseBoolean(value) {
+  return /^(1|true|yes|on)$/i.test(String(value || "").trim());
+}
+
 function writeOutput(name, value) {
   const outputPath = process.env.GITHUB_OUTPUT;
   if (!outputPath) return;
@@ -52,6 +56,8 @@ async function main() {
     files,
     commits,
     evidenceTruncated,
+    repositoryAction,
+    pushClassification,
     warnings: dataWarnings,
   } = await getPullRequestData(event);
   warnings.push(...dataWarnings);
@@ -79,12 +85,16 @@ async function main() {
     inputPaths: parseList(process.env.APORT_PROTECTED_PATHS),
     policy: parsedPolicy,
   });
+  const blockProtectedPaths = parseBoolean(
+    process.env.APORT_BLOCK_PROTECTED_PATHS,
+  );
   const policyBranch = resolvePolicyBranch(event, pr);
   const structuralFindings = [
     ...detectStructuralFindings({
       files,
       evidenceTruncated,
       ...(protectedPaths?.length ? { protectedPaths } : {}),
+      blockProtectedPaths,
       requirePinnedActions: Boolean(
         parsedPolicy?.github?.require_pinned_actions,
       ),
@@ -102,6 +112,8 @@ async function main() {
     structuralFindings,
     repositoryPolicy,
     evidenceTruncated,
+    repositoryAction,
+    pushClassification,
   });
   const readTrustedPassport = async (passportPath) => {
     const result = await readBaseFile(event, passportPath);
@@ -268,6 +280,7 @@ if (require.main === module) {
 module.exports = {
   basePolicyReadFindings,
   buildAttributionInput,
+  parseBoolean,
   parseList,
   resolvePolicyBranch,
   shouldFailWorkflow,

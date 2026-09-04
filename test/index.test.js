@@ -2,12 +2,18 @@ const assert = require("assert");
 const {
   basePolicyReadFindings,
   buildAttributionInput,
+  parseBoolean,
   parseList,
   resolvePolicyBranch,
   shouldFailWorkflow,
 } = require("../src/index");
 
 assert.deepEqual(parseList(" .github/**, src/** ,"), [".github/**", "src/**"]);
+assert.equal(parseBoolean("true"), true);
+assert.equal(parseBoolean("1"), true);
+assert.equal(parseBoolean("yes"), true);
+assert.equal(parseBoolean("false"), false);
+assert.equal(parseBoolean(""), false);
 
 const originalEnv = {
   GITHUB_BASE_REF: process.env.GITHUB_BASE_REF,

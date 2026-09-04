@@ -207,12 +207,20 @@ async function main() {
   const pushPaths = [];
   const pushData = await getPullRequestData(
     {
+      ref: "refs/heads/main",
       before: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       after: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       commits: [],
     },
     async (path) => {
       pushPaths.push(path);
+      if (path.includes("/commits/") && path.includes("/pulls?")) {
+        return {
+          ok: true,
+          status: 200,
+          data: [],
+        };
+      }
       return {
         ok: true,
         status: 200,
@@ -235,10 +243,67 @@ async function main() {
   assert.equal(pushData.commits.length, 1);
   assert.equal(pushData.evidenceTruncated.files, false);
   assert.equal(pushData.evidenceTruncated.commits, false);
-  assert(pushPaths[0].includes("/compare/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
+  assert.equal(pushData.repositoryAction, "repo.push");
+  assert.equal(pushData.pushClassification.push_classification, "direct");
+  assert(pushPaths.some((path) => path.includes("/commits/") && path.includes("/pulls?per_page=10")));
+  assert(pushPaths.some((path) => path.includes("/compare/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")));
 
+  const mergePushPaths = [];
+  const mergePushData = await getPullRequestData(
+    {
+      ref: "refs/heads/main",
+      before: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      after: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      commits: [],
+    },
+    async (path) => {
+      mergePushPaths.push(path);
+      if (path.includes("/commits/") && path.includes("/pulls?")) {
+        return {
+          ok: true,
+          status: 200,
+          data: [
+            {
+              number: 42,
+              state: "closed",
+              merged_at: "2026-09-04T12:00:00Z",
+              base: {
+                ref: "main",
+              },
+              merge_commit_sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            },
+          ],
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        data: {
+          total_commits: 1,
+          commits: [{ sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" }],
+          files: [
+            {
+              filename: "src/merged.js",
+              additions: 2,
+              deletions: 1,
+            },
+          ],
+        },
+      };
+    },
+  );
+
+  assert.equal(mergePushData.repositoryAction, "pr.merge");
+  assert.equal(mergePushData.pushClassification.push_classification, "merged_pull_request");
+  assert.equal(mergePushData.pushClassification.pull_request_number, 42);
+  assert.equal(mergePushData.evidenceTruncated.files, false);
+  assert.equal(mergePushData.evidenceTruncated.commits, false);
+  assert(mergePushPaths.some((path) => path.includes("/compare/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")));
+
+  const pushFallbackPaths = [];
   const pushFallback = await getPullRequestData(
     {
+      ref: "refs/heads/main",
       before: "0000000000000000000000000000000000000000",
       after: "cccccccccccccccccccccccccccccccccccccccc",
       commits: [
@@ -250,7 +315,15 @@ async function main() {
         },
       ],
     },
-    async () => {
+    async (path) => {
+      pushFallbackPaths.push(path);
+      if (path.includes("/commits/") && path.includes("/pulls?")) {
+        return {
+          ok: true,
+          status: 200,
+          data: [],
+        };
+      }
       throw new Error("compare should not be called for zero before SHA");
     },
   );
@@ -261,6 +334,9 @@ async function main() {
   );
   assert.equal(pushFallback.evidenceTruncated.files, true);
   assert.equal(pushFallback.evidenceTruncated.commits, true);
+  assert.equal(pushFallback.repositoryAction, "repo.push");
+  assert.equal(pushFallback.pushClassification.push_classification, "direct");
+  assert(pushFallbackPaths.some((path) => path.includes("/commits/") && path.includes("/pulls?per_page=10")));
   assert(pushFallback.warnings.some((warning) => warning.includes("marking evidence incomplete")));
   delete process.env.GITHUB_EVENT_NAME;
 
