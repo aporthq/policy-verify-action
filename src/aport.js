@@ -35,6 +35,7 @@ async function runAportVerification({
 
   try {
     return await runHostedVerify({
+      mode: normalizedMode,
       apiUrl,
       verifyContext,
       requestJson,
@@ -59,6 +60,7 @@ async function runAportVerification({
 }
 
 async function runHostedVerify({
+  mode,
   apiUrl,
   verifyContext,
   requestJson = defaultRequestJson,
@@ -100,6 +102,7 @@ async function runHostedVerify({
           ...verifyContext,
           agent_id: agentId,
         },
+        runtime: runtimeMetadataForMode(mode),
       }),
     },
   );
@@ -149,6 +152,7 @@ async function runLocalJsonVerify({
       body: JSON.stringify({
         passport,
         context: localContext,
+        runtime: runtimeMetadataForMode("local-json"),
       }),
     },
   );
@@ -187,6 +191,15 @@ function evidenceOnlyResult(mode) {
     success: true,
     provenance: "unattributed",
     decision: null,
+  };
+}
+
+function runtimeMetadataForMode(mode) {
+  const normalizedMode = normalizeMode(mode);
+  return {
+    enforcement_mode: normalizedMode === "hosted" ? "enforce" : "warn",
+    enforced_by: "aporthq/policy-verify-action",
+    harness: "github-actions",
   };
 }
 
