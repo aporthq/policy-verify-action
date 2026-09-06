@@ -102,6 +102,30 @@ async function main() {
     JSON.parse(calls[1].options.body).context.agent_id,
     "ap_hosted_github",
   );
+  assert.deepEqual(JSON.parse(calls[1].options.body).runtime, {
+    enforcement_mode: "warn",
+    enforced_by: "aporthq/policy-verify-action",
+    harness: "github-actions",
+  });
+
+  await runHostedVerify({
+    mode: "hosted",
+    apiUrl: "https://api.aport.io",
+    verifyContext: {
+      repository: "aporthq/agent-passport",
+      action: "pr.update",
+      branch: "main",
+      evidence: hostedEvidence,
+    },
+    requestJson,
+    getOidcToken: async (audience) => `oidc:${audience}`,
+    verifyDecisionSignature: async () => ({ ok: true }),
+  });
+  assert.deepEqual(JSON.parse(calls[calls.length - 1].options.body).runtime, {
+    enforcement_mode: "enforce",
+    enforced_by: "aporthq/policy-verify-action",
+    harness: "github-actions",
+  });
 
   const customOidcAudiences = [];
   await runHostedVerify({
@@ -316,6 +340,11 @@ async function main() {
   assert.equal(localBody.context.agent_id, "ap_local_github");
   assert.equal(localBody.context.require_oidc, undefined);
   assert.equal(localBody.context.authorization, undefined);
+  assert.deepEqual(localBody.runtime, {
+    enforcement_mode: "warn",
+    enforced_by: "aporthq/policy-verify-action",
+    harness: "github-actions",
+  });
 
   const trustedLocal = await runLocalJsonVerify({
     apiUrl: "https://api.aport.io",
