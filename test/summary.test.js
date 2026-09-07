@@ -101,16 +101,18 @@ const autoHostedSummary = renderSummary({
   ],
   verification: {
     mode: "hosted",
+    requiresHosted: true,
     provenance: "ci_time",
     decision: { allow: false, outcome: "deny", decision_id: "dec_3" },
   },
   warnings: [],
+  willFail: true,
 });
 
-assert(autoHostedSummary.includes("Report-only agent attribution"));
-assert(autoHostedSummary.includes("always exits 0"));
-assert(!autoHostedSummary.includes("Hosted enforcement is enabled."));
-assert(autoHostedSummary.includes("**Needs review.**"));
+assert(autoHostedSummary.includes("Hosted enforcement"));
+assert(autoHostedSummary.includes("Hosted enforcement is enabled."));
+assert(!autoHostedSummary.includes("always exits 0"));
+assert(autoHostedSummary.includes("**Blocked.**"));
 
 const reportOnlyDenySummary = renderSummary({
   repository: "aporthq/agent-passport",

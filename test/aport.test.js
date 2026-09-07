@@ -6,6 +6,7 @@ const path = require("path");
 const {
   SIGNATURE_INVALID,
   defaultVerifyDecisionSignature,
+  deriveGitHubOidcAgentIdFromEnv,
   evidenceAudienceForContext,
   normalizeMode,
   runAportVerification,
@@ -102,6 +103,233 @@ async function main() {
     JSON.parse(calls[1].options.body).context.agent_id,
     "ap_hosted_github",
   );
+  assert.deepEqual(JSON.parse(calls[1].options.body).runtime, {
+    enforcement_mode: "warn",
+    enforced_by: "aporthq/policy-verify-action",
+    harness: "github-actions",
+  });
+
+  const managedCalls = [];
+  const managedOidcAudiences = [];
+  const managed = await runHostedVerify({
+    mode: "auto",
+    apiUrl: "https://api.aport.io",
+    agentId: "ap_enterprise_repo",
+    apiKey: "aprt_enterprise_secret",
+    verifyContext: {
+      repository: "aporthq/agent-passport",
+      action: "pr.update",
+      branch: "main",
+      evidence: hostedEvidence,
+    },
+    requestJson: async (url, options) => {
+      managedCalls.push({ url, options });
+      assert(!url.endsWith("/api/github/oidc/issue"));
+      return {
+        decision: {
+          decision_id: "dec_managed_1",
+          agent_id: JSON.parse(options.body).context.agent_id,
+          allow: true,
+          outcome: "allow",
+          provenance: "ci_time",
+          signature: "ed25519:test",
+          kid: "oap:registry:key-2025-01",
+        },
+      };
+    },
+    getOidcToken: async (audience) => {
+      managedOidcAudiences.push(audience);
+      return `oidc:${audience}`;
+    },
+    verifyDecisionSignature: async () => ({ ok: true }),
+  });
+
+  assert.equal(managed.success, true);
+  assert.equal(managed.agentId, "ap_enterprise_repo");
+  assert.equal(managed.managedAgentId, true);
+  assert.equal(managed.requiresHosted, true);
+  assert.equal(managedCalls.length, 1);
+  assert(managedCalls[0].url.endsWith("/api/verify/policy/code.repository.merge.v1"));
+  assert.equal(managedCalls[0].options.headers["X-API-Key"], "aprt_enterprise_secret");
+  assert.equal(
+    JSON.parse(managedCalls[0].options.body).context.agent_id,
+    "ap_enterprise_repo",
+  );
+  assert.deepEqual(JSON.parse(managedCalls[0].options.body).runtime, {
+    enforcement_mode: "enforce",
+    enforced_by: "aporthq/policy-verify-action",
+    harness: "github-actions",
+  });
+  assert.deepEqual(managedOidcAudiences, [
+    "aport.io",
+    evidenceAudienceForContext({ evidence: hostedEvidence }, "aport.io"),
+  ]);
+
+  const originalGitHubEnv = {
+    GITHUB_REPOSITORY: process.env.GITHUB_REPOSITORY,
+    GITHUB_REPOSITORY_ID: process.env.GITHUB_REPOSITORY_ID,
+    GITHUB_SERVER_URL: process.env.GITHUB_SERVER_URL,
+  };
+  process.env.GITHUB_REPOSITORY = "aporthq/agent-passport";
+  process.env.GITHUB_REPOSITORY_ID = "123456";
+  process.env.GITHUB_SERVER_URL = "https://github.com";
+  const autoIssuedManagedAgentId = deriveGitHubOidcAgentIdFromEnv();
+  const autoManagedCalls = [];
+  try {
+    const autoManaged = await runHostedVerify({
+      mode: "auto",
+      apiUrl: "https://api.aport.io",
+      agentId: autoIssuedManagedAgentId,
+      apiKey: "aprt_enterprise_secret",
+      verifyContext: {
+        repository: "aporthq/agent-passport",
+        action: "repo.push",
+        branch: "main",
+        evidence: hostedEvidence,
+      },
+      requestJson: async (url, options) => {
+        autoManagedCalls.push({ url, options });
+        if (url.endsWith("/api/github/oidc/issue")) {
+          return {
+            success: true,
+            data: {
+              agent_id: autoIssuedManagedAgentId,
+              reused: true,
+            },
+          };
+        }
+        return {
+          decision: {
+            decision_id: "dec_auto_managed_1",
+            agent_id: JSON.parse(options.body).context.agent_id,
+            allow: true,
+            outcome: "allow",
+            provenance: "ci_time",
+            signature: "ed25519:test",
+            kid: "oap:registry:key-2025-01",
+          },
+        };
+      },
+      getOidcToken: async (audience) => `oidc:${audience}`,
+      verifyDecisionSignature: async () => ({ ok: true }),
+    });
+
+    assert.equal(autoManaged.success, true);
+    assert.equal(autoManaged.agentId, autoIssuedManagedAgentId);
+    assert.equal(autoManaged.requiresHosted, true);
+    assert.equal(autoManagedCalls.length, 2);
+    assert(autoManagedCalls[0].url.endsWith("/api/github/oidc/issue"));
+    assert(
+      autoManagedCalls[1].url.endsWith(
+        "/api/verify/policy/code.repository.merge.v1",
+      ),
+    );
+    assert.equal(
+      JSON.parse(autoManagedCalls[1].options.body).context.agent_id,
+      autoIssuedManagedAgentId,
+    );
+    assert.equal(
+      autoManagedCalls[1].options.headers["X-API-Key"],
+      "aprt_enterprise_secret",
+    );
+  } finally {
+    for (const [key, value] of Object.entries(originalGitHubEnv)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+
+  await assert.rejects(
+    () =>
+      runHostedVerify({
+        apiUrl: "https://api.aport.io",
+        agentId: "ap_enterprise_repo",
+        verifyContext: {
+          repository: "aporthq/agent-passport",
+          action: "pr.update",
+          branch: "main",
+        },
+        requestJson,
+        getOidcToken: async () => "oidc-token",
+        verifyDecisionSignature: async () => ({ ok: true }),
+      }),
+    /requires api-key/,
+  );
+
+  await assert.rejects(
+    () =>
+      runHostedVerify({
+        apiUrl: "https://api.aport.io",
+        apiKey: "aprt_enterprise_secret",
+        verifyContext: {
+          repository: "aporthq/agent-passport",
+          action: "pr.update",
+          branch: "main",
+        },
+        requestJson,
+        getOidcToken: async () => "oidc-token",
+        verifyDecisionSignature: async () => ({ ok: true }),
+      }),
+    /requires agent-id/,
+  );
+
+  await assert.rejects(
+    () =>
+      runHostedVerify({
+        apiUrl: "https://api.aport.io",
+        agentId: "ap_enterprise\nrepo",
+        apiKey: "aprt_enterprise_secret",
+        verifyContext: {
+          repository: "aporthq/agent-passport",
+          action: "pr.update",
+          branch: "main",
+        },
+        requestJson,
+        getOidcToken: async () => "oidc-token",
+        verifyDecisionSignature: async () => ({ ok: true }),
+      }),
+    /Invalid managed hosted agent-id/,
+  );
+
+  await assert.rejects(
+    () =>
+      runHostedVerify({
+        apiUrl: "https://api.aport.io",
+        agentId: "ap_enterprise_repo",
+        apiKey: "aprt_enterprise\nsecret",
+        verifyContext: {
+          repository: "aporthq/agent-passport",
+          action: "pr.update",
+          branch: "main",
+        },
+        requestJson,
+        getOidcToken: async () => "oidc-token",
+        verifyDecisionSignature: async () => ({ ok: true }),
+      }),
+    /Invalid api-key/,
+  );
+
+  await runHostedVerify({
+    mode: "hosted",
+    apiUrl: "https://api.aport.io",
+    verifyContext: {
+      repository: "aporthq/agent-passport",
+      action: "pr.update",
+      branch: "main",
+      evidence: hostedEvidence,
+    },
+    requestJson,
+    getOidcToken: async (audience) => `oidc:${audience}`,
+    verifyDecisionSignature: async () => ({ ok: true }),
+  });
+  assert.deepEqual(JSON.parse(calls[calls.length - 1].options.body).runtime, {
+    enforcement_mode: "enforce",
+    enforced_by: "aporthq/policy-verify-action",
+    harness: "github-actions",
+  });
 
   const customOidcAudiences = [];
   await runHostedVerify({
@@ -161,6 +389,23 @@ async function main() {
   });
   assert.equal(invalidAutoFallback.mode, "auto-fallback");
   assert.equal(invalidAutoFallback.provenance, "unattributed");
+
+  const managedAutoFailure = await runAportVerification({
+    mode: "auto",
+    fallbackMode: "evidence-only",
+    apiUrl: "https://api.aport.io",
+    agentId: "ap_enterprise_repo",
+    apiKey: "aprt_enterprise_secret",
+    verifyContext: {},
+    requestJson: async () => {
+      throw new Error("managed verification unavailable");
+    },
+    getOidcToken: async () => "oidc-token",
+  });
+  assert.equal(managedAutoFailure.mode, "auto");
+  assert.equal(managedAutoFailure.success, false);
+  assert.equal(managedAutoFailure.requiresHosted, true);
+  assert.match(managedAutoFailure.warning, /managed verification unavailable/);
 
   const missingSignature = await defaultVerifyDecisionSignature({
     apiUrl: "https://api.aport.io",
@@ -316,6 +561,11 @@ async function main() {
   assert.equal(localBody.context.agent_id, "ap_local_github");
   assert.equal(localBody.context.require_oidc, undefined);
   assert.equal(localBody.context.authorization, undefined);
+  assert.deepEqual(localBody.runtime, {
+    enforcement_mode: "warn",
+    enforced_by: "aporthq/policy-verify-action",
+    harness: "github-actions",
+  });
 
   const trustedLocal = await runLocalJsonVerify({
     apiUrl: "https://api.aport.io",

@@ -191,7 +191,8 @@ function renderSummary({
   )
     .trim()
     .toLowerCase();
-  const hostedEnforcement = enforcementMode === "hosted";
+  const hostedEnforcement =
+    enforcementMode === "hosted" || verification?.requiresHosted === true;
   const status = summaryStatus({
     hostedEnforcement,
     willFail,

@@ -17,6 +17,8 @@ async function runAportVerification({
   verifyDecisionSignature = defaultVerifyDecisionSignature,
   readTrustedPassport,
   oidcAudience,
+  agentId,
+  apiKey,
 }) {
   const normalizedMode = normalizeMode(mode);
   if (normalizedMode === "evidence-only") {
@@ -35,15 +37,22 @@ async function runAportVerification({
 
   try {
     return await runHostedVerify({
+      mode: normalizedMode,
       apiUrl,
       verifyContext,
       requestJson,
       getOidcToken,
       verifyDecisionSignature,
       oidcAudience,
+      agentId,
+      apiKey,
     });
   } catch (error) {
-    if (normalizedMode === "auto" && fallbackMode === "evidence-only") {
+    if (
+      normalizedMode === "auto" &&
+      fallbackMode === "evidence-only" &&
+      !hasManagedHostedCredential(agentId, apiKey)
+    ) {
       return {
         ...evidenceOnlyResult("auto-fallback"),
         warning: `Hosted verification unavailable; fell back to evidence-only: ${error.message}`,
@@ -53,38 +62,72 @@ async function runAportVerification({
       mode: normalizedMode,
       provenance: "unattributed",
       success: false,
+      requiresHosted: hasManagedHostedCredential(agentId, apiKey),
       warning: error.message,
     };
   }
 }
 
 async function runHostedVerify({
+  mode,
   apiUrl,
   verifyContext,
   requestJson = defaultRequestJson,
   getOidcToken = defaultGetOidcToken,
   verifyDecisionSignature = defaultVerifyDecisionSignature,
   oidcAudience = "aport.io",
+  agentId,
+  apiKey,
 }) {
-  const baseAudience = normalizeOidcAudience(oidcAudience);
-  const issueOidcToken = await getOidcToken(baseAudience);
-  const issue = await requestJson(joinUrl(apiUrl, "/api/github/oidc/issue"), {
-    method: "POST",
-    headers: {
-      "X-APort-OIDC": issueOidcToken,
-    },
-  });
+  const managedAgentId = normalizeHostedAgentId(agentId);
+  const apiKeyCredential = normalizeSecretCredential(apiKey, "api-key");
+  if (managedAgentId && !apiKeyCredential) {
+    throw new Error("Managed hosted verification requires api-key when agent-id is set");
+  }
+  if (apiKeyCredential && !managedAgentId) {
+    throw new Error("Managed hosted verification requires agent-id when api-key is set");
+  }
 
-  const agentId =
-    issue?.data?.agent_id || issue?.data?.passport_id || issue?.agent_id;
-  if (!agentId) {
+  const baseAudience = normalizeOidcAudience(oidcAudience);
+  const baseOidcToken = await getOidcToken(baseAudience);
+  let issue;
+  let resolvedAgentId = managedAgentId;
+  if (managedAgentId && isAutoIssuedGitHubAgentId(managedAgentId)) {
+    issue = await issueGitHubOidcPassport({
+      apiUrl,
+      baseOidcToken,
+      requestJson,
+    });
+    const refreshedAgentId = extractIssuedAgentId(issue);
+    if (!refreshedAgentId) {
+      throw new Error("APort issue endpoint did not return agent_id");
+    }
+    if (refreshedAgentId !== managedAgentId) {
+      throw new Error(
+        "Managed hosted agent-id does not match this GitHub repository OIDC identity",
+      );
+    }
+  }
+  if (!resolvedAgentId) {
+    issue = await requestJson(joinUrl(apiUrl, "/api/github/oidc/issue"), {
+      method: "POST",
+      headers: {
+        "X-APort-OIDC": baseOidcToken,
+      },
+    });
+
+    resolvedAgentId = extractIssuedAgentId(issue);
+  }
+  if (!resolvedAgentId) {
     throw new Error("APort issue endpoint did not return agent_id");
   }
 
+  const requiresHosted =
+    Boolean(managedAgentId) || normalizeMode(mode) === "hosted";
   const verifyAudience = evidenceAudienceForContext(verifyContext, baseAudience);
   const verifyOidcToken =
     verifyAudience === baseAudience
-      ? issueOidcToken
+      ? baseOidcToken
       : await getOidcToken(verifyAudience);
   const decisionResponse = await requestJson(
     joinUrl(apiUrl, `/api/verify/policy/${POLICY_ID}`),
@@ -94,19 +137,23 @@ async function runHostedVerify({
         "Content-Type": "application/json",
         "X-APort-OIDC": verifyOidcToken,
         "X-APort-Require-OIDC": "github",
+        ...(apiKeyCredential ? { "X-API-Key": apiKeyCredential } : {}),
       },
       body: JSON.stringify({
         context: {
           ...verifyContext,
-          agent_id: agentId,
+          agent_id: resolvedAgentId,
         },
+        runtime: runtimeMetadataForMode(mode, { requiresHosted }),
       }),
     },
   );
 
   const result = normalizeDecisionResult("hosted", decisionResponse, {
-    agentId,
-    issueReused: Boolean(issue?.data?.reused),
+    agentId: resolvedAgentId,
+    issueReused: managedAgentId ? false : Boolean(issue?.data?.reused),
+    managedAgentId: Boolean(managedAgentId),
+    requiresHosted,
   });
   const signature = await verifyDecisionSignature({
     apiUrl,
@@ -121,6 +168,28 @@ async function runHostedVerify({
     ...result,
     signatureVerified: true,
   };
+}
+
+async function issueGitHubOidcPassport({
+  apiUrl,
+  baseOidcToken,
+  requestJson = defaultRequestJson,
+}) {
+  return requestJson(joinUrl(apiUrl, "/api/github/oidc/issue"), {
+    method: "POST",
+    headers: {
+      "X-APort-OIDC": baseOidcToken,
+    },
+  });
+}
+
+function extractIssuedAgentId(issue) {
+  return (
+    issue?.data?.agent_id ||
+    issue?.data?.passport_id ||
+    issue?.agent_id ||
+    ""
+  );
 }
 
 async function runLocalJsonVerify({
@@ -149,6 +218,7 @@ async function runLocalJsonVerify({
       body: JSON.stringify({
         passport,
         context: localContext,
+        runtime: runtimeMetadataForMode("local-json"),
       }),
     },
   );
@@ -190,6 +260,16 @@ function evidenceOnlyResult(mode) {
   };
 }
 
+function runtimeMetadataForMode(mode, { requiresHosted = false } = {}) {
+  const normalizedMode = normalizeMode(mode);
+  return {
+    enforcement_mode:
+      normalizedMode === "hosted" || requiresHosted ? "enforce" : "warn",
+    enforced_by: "aporthq/policy-verify-action",
+    harness: "github-actions",
+  };
+}
+
 function normalizeMode(mode) {
   const rawValue = String(mode || "").trim();
   const value = rawValue ? rawValue.toLowerCase() : "auto";
@@ -204,6 +284,69 @@ function normalizeMode(mode) {
 function normalizeOidcAudience(audience) {
   const value = String(audience || "").trim();
   return value || "aport.io";
+}
+
+function normalizeHostedAgentId(agentId) {
+  const value = String(agentId || "").trim();
+  if (!value) return "";
+  if (!/^[A-Za-z0-9][A-Za-z0-9_:-]{1,127}$/.test(value)) {
+    throw new Error("Invalid managed hosted agent-id");
+  }
+  return value;
+}
+
+function normalizeSecretCredential(value, label) {
+  const credential = String(value || "").trim();
+  if (!credential) return "";
+  if (/[\r\n]/.test(credential) || credential.length > 4096) {
+    throw new Error(`Invalid ${label}`);
+  }
+  return credential;
+}
+
+function hasManagedHostedCredential(agentId, apiKey) {
+  return Boolean(String(agentId || "").trim() || String(apiKey || "").trim());
+}
+
+function isAutoIssuedGitHubAgentId(agentId) {
+  const expectedAgentId = deriveGitHubOidcAgentIdFromEnv();
+  return Boolean(
+    expectedAgentId && normalizeHostedAgentId(agentId) === expectedAgentId,
+  );
+}
+
+function deriveGitHubOidcAgentIdFromEnv() {
+  const host = normalizeGitHubHost(process.env.GITHUB_SERVER_URL);
+  const repositoryId = oneLineEnvValue(process.env.GITHUB_REPOSITORY_ID);
+  const repository = oneLineEnvValue(process.env.GITHUB_REPOSITORY);
+  const repositoryBinding = repositoryId
+    ? `repository_id:${repositoryId}`
+    : repository
+      ? `repository:${repository}`
+      : "";
+  if (!repositoryBinding) return "";
+  const subject = [
+    "github_actions_oidc",
+    `host:${host}`,
+    repositoryBinding,
+  ].join("|");
+  const subjectHash = createHash("sha256").update(subject).digest("hex");
+  return `ap_${subjectHash.slice(0, 32)}`;
+}
+
+function normalizeGitHubHost(serverUrl) {
+  const value = oneLineEnvValue(serverUrl);
+  if (!value) return "github.com";
+  try {
+    return new URL(value).hostname || "github.com";
+  } catch {
+    return "github.com";
+  }
+}
+
+function oneLineEnvValue(value) {
+  const normalized = String(value || "").trim();
+  return /[\r\n]/.test(normalized) ? "" : normalized;
 }
 
 function evidenceAudienceForContext(context = {}, baseAudience = "aport.io") {
@@ -452,5 +595,7 @@ module.exports = {
   runLocalJsonVerify,
   buildLocalJsonVerifyContext,
   normalizeMode,
+  normalizeHostedAgentId,
+  deriveGitHubOidcAgentIdFromEnv,
   joinUrl,
 };

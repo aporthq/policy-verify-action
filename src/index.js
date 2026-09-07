@@ -44,13 +44,44 @@ function writeSummary(summary) {
   process.stdout.write(`${summary}\n`);
 }
 
+function addMask(value) {
+  const secret = String(value || "");
+  if (!secret) return;
+  process.stdout.write(`::add-mask::${escapeWorkflowCommandValue(secret)}\n`);
+}
+
+function escapeWorkflowCommandValue(value) {
+  return String(value)
+    .replace(/%/g, "%25")
+    .replace(/\r/g, "%0D")
+    .replace(/\n/g, "%0A");
+}
+
 async function main() {
   const event = readEventPayload();
   const pr =
     event.pull_request || (event.number && event.head && event.base ? event : {});
   const configuredMode = process.env.APORT_MODE || "auto";
+  const {
+    agentId: configuredManagedAgentId,
+    apiKey: configuredApiKey,
+  } = readManagedCredentials(process.env);
+  addMask(configuredApiKey);
   const warnings = [];
   if (event.__error) warnings.push(event.__error);
+  const useManagedCredentials = shouldUseManagedCredentials({
+    event,
+    pr,
+    repository: process.env.GITHUB_REPOSITORY || "",
+    actor: process.env.GITHUB_ACTOR || "",
+  });
+  if (!useManagedCredentials && (configuredManagedAgentId || configuredApiKey)) {
+    warnings.push(
+      "Managed hosted credentials were ignored for a no-secret pull request; using the no-secret GitHub OIDC hosted path.",
+    );
+  }
+  const managedAgentId = useManagedCredentials ? configuredManagedAgentId : "";
+  const apiKey = useManagedCredentials ? configuredApiKey : "";
 
   const {
     files,
@@ -129,6 +160,8 @@ async function main() {
     mode: configuredMode,
     apiUrl: process.env.APORT_API_URL || "https://api.aport.io",
     oidcAudience: process.env.APORT_OIDC_AUDIENCE || "aport.io",
+    agentId: managedAgentId,
+    apiKey,
     passportPath: process.env.APORT_PASSPORT_PATH || ".aport/passport.json",
     fallbackMode: process.env.APORT_FALLBACK_MODE || "evidence-only",
     verifyContext,
@@ -180,8 +213,10 @@ async function main() {
 }
 
 function shouldFailWorkflow(mode, verification, structuralFindings = []) {
+  const requiresHosted =
+    normalizeMode(mode) === "hosted" || verification?.requiresHosted === true;
   return (
-    normalizeMode(mode) === "hosted" &&
+    requiresHosted &&
     (!verification?.success ||
       verification?.decision?.allow === false ||
       hasBlockingStructuralFindings(structuralFindings))
@@ -202,6 +237,40 @@ function hasBlockingStructuralFindings(findings = []) {
   return findings.some((finding) =>
     ["high", "error"].includes(String(finding?.severity || "").toLowerCase()),
   );
+}
+
+function shouldUseManagedCredentials({
+  event = {},
+  pr = {},
+  repository = "",
+  actor = process.env.GITHUB_ACTOR || "",
+} = {}) {
+  const headRepository =
+    pr.head?.repo?.full_name || event.pull_request?.head?.repo?.full_name || "";
+  const baseRepository = repository || event.repository?.full_name || "";
+  if (isDependabotPullRequest({ event, pr, actor })) return false;
+  // GitHub withholds secrets for every pull-request-derived event from an
+  // external fork, including pull_request_review. Treat any event carrying a
+  // PR head repository as a no-secret run when its repository differs.
+  if (!headRepository || !baseRepository) return true;
+  return headRepository === baseRepository;
+}
+
+function readManagedCredentials(env = process.env) {
+  return {
+    agentId: env.APORT_INPUT_AGENT_ID || "",
+    apiKey: env.APORT_INPUT_API_KEY || "",
+  };
+}
+
+function isDependabotPullRequest({ event = {}, pr = {}, actor = "" } = {}) {
+  if (!pr.number && !event.pull_request) return false;
+  return [
+    pr.user?.login,
+    event.pull_request?.user?.login,
+    event.sender?.login,
+    actor || process.env.GITHUB_ACTOR,
+  ].some((login) => String(login || "").toLowerCase() === "dependabot[bot]");
 }
 
 function basePolicyReadFindings(basePolicy, warnings = []) {
@@ -259,8 +328,7 @@ function isBasePolicyReadFailure(warning) {
 }
 
 function handleFatalError(error) {
-  const mode = normalizeMode(process.env.APORT_MODE || "auto");
-  const hosted = mode === "hosted";
+  const hosted = fatalRequiresHosted(process.env, readEventPayload());
   writeSummary(`# APort / OAP code.repository.merge.v1
 
 ${hosted ? "Hosted verification could not complete." : "Report-only mode could not complete."}
@@ -273,6 +341,24 @@ ${hosted ? "Hosted verification could not complete." : "Report-only mode could n
   }
 }
 
+function fatalRequiresHosted(env = process.env, event = {}) {
+  const mode = normalizeMode(env.APORT_MODE || "auto");
+  if (mode === "hosted") return true;
+  if (mode !== "auto") return false;
+
+  const { agentId, apiKey } = readManagedCredentials(env);
+  if (!agentId && !apiKey) return false;
+
+  const pr =
+    event.pull_request || (event.number && event.head && event.base ? event : {});
+  return shouldUseManagedCredentials({
+    event,
+    pr,
+    repository: env.GITHUB_REPOSITORY || "",
+    actor: env.GITHUB_ACTOR || "",
+  });
+}
+
 if (require.main === module) {
   main().catch(handleFatalError);
 }
@@ -280,8 +366,11 @@ if (require.main === module) {
 module.exports = {
   basePolicyReadFindings,
   buildAttributionInput,
+  fatalRequiresHosted,
   parseBoolean,
   parseList,
+  readManagedCredentials,
   resolvePolicyBranch,
   shouldFailWorkflow,
+  shouldUseManagedCredentials,
 };
