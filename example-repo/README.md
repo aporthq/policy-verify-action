@@ -78,6 +78,20 @@ The default protected path set covers workflows, package manifests, APort policy
     protected-paths: ".github/workflows/**,package.json,policies/**"
 ```
 
+## Managed Hosted Audit
+
+Use a managed hosted passport when decisions should persist under your APort org:
+
+```yaml
+- uses: aporthq/policy-verify-action@v1
+  with:
+    mode: hosted
+    agent-id: ${{ vars.APORT_GITHUB_AGENT_ID }}
+    api-key: ${{ secrets.APORT_API_KEY }}
+```
+
+Store `APORT_GITHUB_AGENT_ID` as a GitHub Variable and `APORT_API_KEY` as a GitHub Secret. The Action sends the API key as `X-API-Key` only to APort Verify. GitHub OIDC is still required and must match the repository binding on the hosted passport before APort signs and logs the decision.
+
 ## Moving to Enforcement
 
 This Action is intentionally post-PR and report-only. To create pre-action authorization records, install APort guardrails in the developer's coding agent so tool calls produce signed decisions before files, shell commands, or GitHub actions run.

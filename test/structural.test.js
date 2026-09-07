@@ -523,6 +523,39 @@ const repositoryPolicyConfigFinding = repositoryPolicyConfigFindings.find(
 assert(repositoryPolicyConfigFinding);
 assert.equal(repositoryPolicyConfigFinding.severity, "high");
 
+const omittedWorkflowProtectedPathsFindings = detectStructuralFindings({
+  blockProtectedPaths: false,
+  protectedPaths: ["src/**"],
+  files: [
+    {
+      filename: ".github/workflows/aport-guard.yml",
+      patch: "+          uses: attacker/action@v1",
+    },
+  ],
+});
+const omittedWorkflowProtectedPathsFinding =
+  omittedWorkflowProtectedPathsFindings.find(
+    (finding) => finding.code === "OAP.REPO.PROTECTED_PATH_TOUCHED",
+  );
+assert(omittedWorkflowProtectedPathsFinding);
+assert.equal(omittedWorkflowProtectedPathsFinding.severity, "high");
+
+const consumerAppPathFindings = detectStructuralFindings({
+  blockProtectedPaths: false,
+  protectedPaths: ["src/**"],
+  files: [
+    {
+      filename: "functions/api/github/webhook.js",
+      patch: "+export function handler() { return Response.json({ ok: true }); }",
+    },
+  ],
+});
+assert(
+  !consumerAppPathFindings.find(
+    (finding) => finding.code === "OAP.REPO.PROTECTED_PATH_TOUCHED",
+  ),
+);
+
 const blockingProtectedConfigFindings = detectStructuralFindings({
   blockProtectedPaths: true,
   files: [

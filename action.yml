@@ -22,6 +22,14 @@ inputs:
     description: "GitHub OIDC audience expected by the APort API."
     required: false
     default: "aport.io"
+  agent-id:
+    description: "Optional managed hosted OAP passport ID. Use with api-key when you want customer-owned persisted audit instead of the free auto-issued repository passport."
+    required: false
+    default: ""
+  api-key:
+    description: "Optional APort API key for managed hosted verification. Store this as a GitHub secret and pass it with secrets.APORT_API_KEY."
+    required: false
+    default: ""
   passport-path:
     description: "Trusted OAP passport JSON path for local-json mode. Do not read this from untrusted PR head content."
     required: false
@@ -66,6 +74,8 @@ runs:
         APORT_FALLBACK_MODE: ${{ inputs.fallback-mode }}
         APORT_API_URL: ${{ inputs.api-url }}
         APORT_OIDC_AUDIENCE: ${{ inputs.oidc-audience }}
+        APORT_INPUT_AGENT_ID: ${{ inputs.agent-id }}
+        APORT_INPUT_API_KEY: ${{ inputs.api-key }}
         APORT_PASSPORT_PATH: ${{ inputs.passport-path }}
         APORT_PROTECTED_PATHS: ${{ inputs.protected-paths }}
         APORT_BLOCK_PROTECTED_PATHS: ${{ inputs.block-protected-paths }}

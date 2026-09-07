@@ -28,4 +28,7 @@ jobs:
         uses: aporthq/policy-verify-action@v1
         with:
           mode: hosted
+          agent-id: ${{ vars.APORT_GITHUB_AGENT_ID }}
+          api-key: ${{ secrets.APORT_API_KEY }}
+          block-protected-paths: false
           protected-paths: ".github/workflows/**,action.yml,package.json,src/**,test/**,fixtures/**"

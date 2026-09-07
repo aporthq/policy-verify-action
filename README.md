@@ -2,7 +2,7 @@
 
 APort AI agent passport guardrails for GitHub: hosted OAP decisions, PR attribution, and protected-path checks.
 
-No config, no daemon, no account, and no API key by default.
+No config, no daemon, no account, and no API key by default. Teams that want decisions persisted under their own APort org can pass a managed hosted passport ID and an APort API key.
 
 This first slice answers a narrow question that scanners do not answer:
 
@@ -32,7 +32,8 @@ Learn more at [aport.io](https://aport.io), the [GitHub Actions quickstart](http
 - Supports `local-json` mode for a trusted OAP passport file; this posts the passport to the same verifier without hosted decision persistence.
 - Supports `evidence-only` mode for attribution and structural findings with no APort network calls.
 - Exits 0 in default `auto`, `evidence-only`, and `local-json` report modes. Explicit `hosted` mode fails when signed hosted verification cannot complete.
-- Requires no APort account, user-managed passport ID, API key, secrets, or PR comments.
+- Requires no APort account, user-managed passport ID, API key, secrets, or PR comments for the free default path.
+- Supports managed hosted passports with `agent-id` plus `api-key` for customer-owned audit trails.
 
 ## Quick Start
 
@@ -83,6 +84,24 @@ Default `auto` mode attempts hosted OIDC verification first. If OIDC is unavaila
 
 APort-hosted deployments must configure `APORT_GITHUB_FREE_OWNER_ID` to a real platform-owned org ID before `/api/github/oidc/issue` can mint free hosted passports. The endpoint fails closed when that owner is missing.
 
+## Managed Hosted Passport
+
+Use a managed hosted passport when you want Repository Guard decisions to appear in your APort org audit trail instead of the free APort-owned repository passport. Store the API key as a GitHub Secret and the passport ID as a GitHub Variable:
+
+```yaml
+- uses: aporthq/policy-verify-action@v1
+  with:
+    mode: hosted
+    agent-id: ${{ vars.APORT_GITHUB_AGENT_ID }}
+    api-key: ${{ secrets.APORT_API_KEY }}
+```
+
+`agent-id` is an identifier, not a secret. `api-key` is a credential and should come from `secrets.APORT_API_KEY`, not a literal workflow value. The Action sends the API key as `X-API-Key` only to `POST /api/verify/policy/code.repository.merge.v1`; it is not sent to the free passport issue endpoint and is not written to outputs.
+
+The hosted verifier still requires GitHub OIDC for managed passports. APort checks that the OIDC repository binding matches the passport's GitHub integration before it signs or logs the decision, so an API key alone cannot fake repository evidence.
+
+For public repositories that accept fork PRs, GitHub does not expose normal repository secrets to untrusted fork workflows. When the Action detects an external fork PR, it ignores the managed passport inputs and continues through the no-secret hosted OIDC path instead of failing on a missing secret.
+
 ## Repository Policy
 
 The Action supports a small base-branch policy file for report-only GitHub evidence:
@@ -115,16 +134,18 @@ Structural checks are deterministic repository-safety evidence, not a general ma
 | `mode` | `auto` | Verification mode: `auto`, `hosted`, `local-json`, or `evidence-only`. |
 | `api-url` | `https://api.aport.io` | APort API base URL for hosted verification. |
 | `oidc-audience` | `aport.io` | GitHub OIDC audience expected by the APort API. Only change this for private or staging APort deployments. |
+| `agent-id` | empty | Optional managed hosted OAP passport ID. Use with `api-key` to persist decisions under your APort org. |
+| `api-key` | empty | Optional APort API key for managed hosted verification. Store as a GitHub Secret and pass `secrets.APORT_API_KEY`. |
 | `passport-path` | `.aport/passport.json` | Trusted OAP passport JSON path for `local-json` mode. The Action reads it from the trusted base/push ref, not from PR-head checkout content. |
-| `protected-paths` | empty | Extra comma-separated protected path globs for Action-side evidence. |
-| `block-protected-paths` | `false` | Escalate protected-path changes from warning to high severity. Use with explicit `mode: hosted` for security-critical repos after rollout. |
+| `protected-paths` | empty | Extra comma-separated path globs that should be highlighted in Action-side evidence. These are review-sensitive paths, not automatic failures. |
+| `block-protected-paths` | `false` | Escalate protected-path touches from warning to high severity. Use only when the repo is ready for blanket protected-path blocking. |
 
 ## Modes
 
 | Mode | Behavior |
 |---|---|
-| `auto` | Default. Requests GitHub OIDC, issues/reuses a hosted OAP passport, calls APort Verify, and falls back to `evidence-only` if hosted verification is unavailable. |
-| `hosted` | Requires GitHub OIDC and calls hosted APort Verify. No API key is needed for the free report-only path. Fails the workflow if hosted verification cannot return a valid signed decision. |
+| `auto` | Default. Requests GitHub OIDC, issues/reuses a hosted OAP passport, calls APort Verify, and falls back to `evidence-only` if hosted verification is unavailable. If `agent-id` or `api-key` is configured, hosted verification is required and does not silently fall back. |
+| `hosted` | Requires GitHub OIDC and calls hosted APort Verify. No API key is needed for the free path; use `agent-id` plus `api-key` for customer-owned audit. Fails the workflow if hosted verification cannot return a valid signed decision. |
 | `local-json` | Reads a trusted OAP passport JSON file and posts it to the same verifier as `body.passport`; the verifier skips hosted decision persistence. |
 | `evidence-only` | No hosted passport, no verifier call, no network calls to APort. Attribution and structural checks only. |
 
@@ -132,7 +153,7 @@ Use `evidence-only` when running a local Action source from a checked-out PR hea
 
 Hosted mode treats a missing, fallback, or invalid APort decision signature as `OAP.DECISION.SIGNATURE_INVALID`. Default `auto` mode falls back to labelled evidence-only reporting; explicit `hosted` mode fails so teams do not mistake missing hosted evidence for a verified check.
 
-Protected paths are warning-level by default to keep first-time setup low-friction. Security-critical repositories should set `block-protected-paths: true` so workflow, policy, package, or verifier changes fail closed in hosted mode.
+Protected paths are warning-level by default to keep first-time setup low-friction. They tell reviewers and APort policy which files deserve extra attention. If a repository wants every protected-path touch to fail closed, set `block-protected-paths: true` after the team has tuned the path list and rollout process.
 
 ## Outputs
 
