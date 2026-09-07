@@ -23,7 +23,10 @@ const DEFAULT_PROTECTED_PATHS = [
   "policies/**",
 ];
 
-const CONTROL_PLANE_MUTATION_PATHS = [
+// These paths can alter the guard's trust boundary or the policy it enforces.
+// They remain fail-closed even where a repository opts to report other
+// protected-path changes without blocking the workflow.
+const DEFAULT_CONTROL_PLANE_PATHS = [
   ".github/workflows/**",
   ".github/workflow-templates/**",
   ".github/workflows-templates/**",
@@ -118,10 +121,6 @@ function isWorkflow(path) {
   );
 }
 
-function isControlPlaneMutationPath(path) {
-  return matchesAny(CONTROL_PLANE_MUTATION_PATHS, path);
-}
-
 function isSuspiciousContentPath(path, additionalPaths = []) {
   if (isDocumentationPath(path)) return false;
   return (
@@ -171,13 +170,26 @@ function detectStructuralFindings({
       filePathCandidates(file).filter((path) => matchesAny(protectedPaths, path)),
     ),
   );
-  if (protectedTouched.length) {
-    const touchesControlPlane = protectedTouched.some(isControlPlaneMutationPath);
+  const controlPlaneTouched = uniquePaths(
+    files.flatMap((file) =>
+      filePathCandidates(file).filter((path) =>
+        matchesAny(DEFAULT_CONTROL_PLANE_PATHS, path),
+      ),
+    ),
+  );
+  const protectedOrControlPlaneTouched = uniquePaths([
+    ...protectedTouched,
+    ...controlPlaneTouched,
+  ]);
+  if (protectedOrControlPlaneTouched.length) {
     findings.push({
       code: "OAP.REPO.PROTECTED_PATH_TOUCHED",
-      severity: blockProtectedPaths || touchesControlPlane ? "high" : "warning",
-      message: "Protected repository paths changed.",
-      paths: protectedTouched,
+      severity:
+        controlPlaneTouched.length || blockProtectedPaths ? "high" : "warning",
+      message: controlPlaneTouched.length
+        ? "Guard control-plane paths changed."
+        : "Protected repository paths changed.",
+      paths: protectedOrControlPlaneTouched,
     });
   }
 
@@ -580,6 +592,7 @@ function findUnpinnedActions(source) {
 }
 
 module.exports = {
+  DEFAULT_CONTROL_PLANE_PATHS,
   DEFAULT_PROTECTED_PATHS,
   DEFAULT_SUSPICIOUS_CONTENT_PATHS,
   detectSuspiciousContentFindings,
