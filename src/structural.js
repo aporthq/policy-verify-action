@@ -81,7 +81,7 @@ const PERMISSION_ENTRY_RE = new RegExp(
 );
 const PULL_REQUEST_TARGET_RE =
   /^\s*-\s*['"]?pull_request_target['"]?\s*$|^\s*['"]?pull_request_target['"]?\s*:|^\s*['"]?on['"]?\s*:\s*['"]?pull_request_target['"]?\s*(?:#.*)?$|^\s*['"]?on['"]?\s*:\s*\[[^\]]*\b['"]?pull_request_target['"]?\b[^\]]*\]|^\s*['"]?on['"]?\s*:\s*\{.*\b['"]?pull_request_target['"]?\b.*\}\s*$/im;
-const USES_ACTION_RE = /^\s*(?:-\s*)?uses\s*:\s*['"]?([^'"\s#]+)['"]?(?:\s+#.*)?$/gim;
+const USES_ACTION_RE = /^\s*(?:-\s*)?["']?uses["']?\s*:\s*['"]?([^'"\s#]+)['"]?(?:\s+#.*)?$/gim;
 // The guard's own identity. Used only to recognise the pull request that
 // installs this action, and matched against the repository slug so a fork or
 // lookalike name (`evil/policy-verify-action`) does not qualify.
@@ -238,7 +238,7 @@ function installsAportGuard(file, fileContents = {}) {
     fileContentForPaths(paths, fileContents),
   );
 
-  const refs = workflowStepUses(source);
+  const refs = workflowExecutableUses(source);
   if (!refs.some((ref) => isAportGuardActionRef(ref))) return false;
 
   // Every other action step must be one an install actually needs. Anything
@@ -298,10 +298,10 @@ function isAportGuardActionRef(ref) {
 }
 
 /**
- * Action references that appear as actual workflow steps (`steps[].uses`).
+ * Action references that appear as executable workflow entries.
  *
  * YAML without a parser, so this is a structural approximation rather than a
- * full load. Two things have to be true for a `uses:` line to count:
+ * full load. Three forms count as executable references:
  *
  *   1. It is not inside a block scalar. `key: |` or `key: >` makes every
  *      following line indented deeper than that key literal text, so anything
@@ -310,8 +310,13 @@ function isAportGuardActionRef(ref) {
  *      `uses:` key in a mapping opened by a `- ` sequence item at the same
  *      indent. A workflow nests jobs > <job> > steps > - step, so a step key is
  *      always indented; a top-level `uses:` is not a workflow step.
+ *   3. It is a job-level reusable workflow reference (`jobs.<id>.uses`).
+ *
+ * Including job-level `uses` matters because a bootstrap install is only safe
+ * when the whole workflow is just the guard. A reusable workflow is executable
+ * code too, so it must be surfaced to the allowlist instead of ignored.
  */
-function workflowStepUses(source) {
+function workflowExecutableUses(source) {
   const refs = [];
   const lines = String(source || "").split(/\r?\n/);
   // Indent of the key that opened the current block scalar, or null.
@@ -341,14 +346,14 @@ function workflowStepUses(source) {
     }
 
     const usesMatch = line.match(
-      /^\s*(?:-\s*)?uses\s*:\s*['"]?([^'"\s#]+)['"]?\s*$/i,
+      /^\s*(?:-\s*)?["']?uses["']?\s*:\s*['"]?([^'"\s#]+)['"]?\s*$/i,
     );
     if (usesMatch) {
       const isSequenceItem = Boolean(sequenceMatch);
       const isStepKey =
         sequenceItemIndent !== null && indent === sequenceItemIndent;
-      // A step is always nested under jobs > <job> > steps, so indent > 0.
-      if (indent > 0 && (isSequenceItem || isStepKey)) {
+      const isNestedExecutableKey = indent > 0 && !isSequenceItem;
+      if (indent > 0 && (isSequenceItem || isStepKey || isNestedExecutableKey)) {
         refs.push(usesMatch[1]);
       }
       continue;
@@ -391,8 +396,8 @@ function introducesUnpinnedActions({
 
 /**
  * The carve-out exists for the pull request that installs the guard, so it only
- * applies to pull-request style validation (`pull_request` and the merge queue
- * re-validation of the same change).
+ * applies to pull-request style validation (`pull_request`, review events on
+ * that same PR, and the merge queue re-validation of the same change).
  *
  * The push trigger exists to catch changes made directly on a protected branch,
  * which is exactly the case the control-plane rule is fail-closed for. A direct
@@ -406,9 +411,9 @@ function isInstallPullRequestEvent(eventName) {
   // pull_request_target is deliberately NOT here. It runs with the base
   // repository's secrets against head content the fork author controls, so it
   // is the one event where downgrading a control-plane finding is worst, and
-  // README.md and CHANGELOG.md both already say the carve-out covers pull
-  // request and merge queue validation only. A guard workflow does not need it.
-  return ["pull_request", "merge_group"].includes(
+  // README.md and CHANGELOG.md both already say the carve-out covers PR-style
+  // validation only. A guard workflow does not need pull_request_target.
+  return ["pull_request", "pull_request_review", "merge_group"].includes(
     String(eventName || "").toLowerCase(),
   );
 }

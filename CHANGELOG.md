@@ -29,15 +29,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   workflow file. When every control-plane file in a pull request is newly added
   and each is a workflow whose `steps` install this action, it is now reported
   as a warning, with `bootstrap_install` in the finding details. The carve-out
-  applies to pull request and merge queue validation only, never to a direct
-  push. Modifying or deleting an existing workflow, changing an existing
-  `.aport` policy, adding a control-plane file unrelated to the install, or
-  introducing a permission escalation or `pull_request_target` all still fail,
-  as does an unpinned install when the trusted base policy sets
-  `github.require_pinned_actions`. `block-protected-paths: true` opts out.
+  applies to PR-style validation (`pull_request`, `pull_request_review`, and
+  `merge_group`) only, never to a direct push. Modifying or deleting an
+  existing workflow, changing an existing `.aport` policy, adding a
+  control-plane file unrelated to the install, or introducing a permission
+  escalation or `pull_request_target` all still fail, as does an unpinned
+  install when the trusted base policy sets `github.require_pinned_actions`.
+  `block-protected-paths: true` opts out.
 - The guard marker is now read from parsed workflow steps rather than raw
   lines, so a `run: |` block scalar quoting `uses: aporthq/policy-verify-action`
   no longer makes an unrelated workflow look like an install.
+- Reusable workflow calls, quoted `uses` step keys, and other executable action
+  references are now parsed before applying the install carve-out, so a workflow
+  that does more than install the guard remains fail-closed.
 - README said protected paths were warning-level by default for low-friction
   setup, which control-plane handling made unreachable. It now documents both
   the control-plane rule and the install carve-out.
