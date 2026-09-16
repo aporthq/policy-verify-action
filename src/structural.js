@@ -82,6 +82,10 @@ const PERMISSION_ENTRY_RE = new RegExp(
 const PULL_REQUEST_TARGET_RE =
   /^\s*-\s*['"]?pull_request_target['"]?\s*$|^\s*['"]?pull_request_target['"]?\s*:|^\s*['"]?on['"]?\s*:\s*['"]?pull_request_target['"]?\s*(?:#.*)?$|^\s*['"]?on['"]?\s*:\s*\[[^\]]*\b['"]?pull_request_target['"]?\b[^\]]*\]|^\s*['"]?on['"]?\s*:\s*\{.*\b['"]?pull_request_target['"]?\b.*\}\s*$/im;
 const USES_ACTION_RE = /^\s*(?:-\s*)?uses\s*:\s*['"]?([^'"\s#]+)['"]?(?:\s+#.*)?$/gim;
+// The guard's own identity. Used only to recognise the pull request that
+// installs this action, and matched against the repository slug so a fork or
+// lookalike name (`evil/policy-verify-action`) does not qualify.
+const APORT_ACTION_REPOSITORY = "aporthq/policy-verify-action";
 const SHA_PIN_RE = /^[a-f0-9]{40}$/i;
 const SUSPICIOUS_PATTERNS = [
   {
@@ -138,6 +142,277 @@ function isDocumentationPath(path) {
   return DOCUMENTATION_EXTENSIONS.has(extension);
 }
 
+/**
+ * A first-install ("bootstrap") pull request: the one that adds the guard and
+ * would otherwise fail on the very file it is installing.
+ *
+ * Control-plane paths are fail-closed because a change there can weaken the
+ * guard. Adding the guard is the one case where that reasoning does not hold:
+ * there is no prior policy to weaken, and blocking it means every new adopter's
+ * first PR goes red, which teaches them to ignore or remove the check.
+ *
+ * Deliberately narrow, so it cannot be used to slip a change past the guard:
+ *   - every control-plane file in the PR is ADDED, never modified or removed
+ *     (a modification could weaken an existing workflow)
+ *   - EVERY added control-plane file installs THIS action, proven by a `uses:`
+ *     step naming the guard's own repository. Without that evidence, adding any
+ *     unrelated workflow or a brand-new .aport policy would read as a first
+ *     install and quietly lose the control-plane severity. Checking every file
+ *     rather than just one matters: an install that also adds an unrelated
+ *     `deploy.yml` would otherwise downgrade that file too.
+ *   - no existing .aport policy file is touched
+ *
+ * The marker is content an author controls, so a guard step alone cannot be the
+ * test: a workflow that carries a real guard step AND a `run:` that posts
+ * GITHUB_TOKEN to an attacker satisfies it while raising no blocking finding of
+ * its own (the id-token/contents pair is read as OIDC and is only a warning).
+ * The added workflow must therefore look like an install as a WHOLE file:
+ * no `run:` steps at all, and no `uses:` other than the guard and a short
+ * allowlist of steps a real install legitimately needs.
+ *
+ * A PR that both installs the guard and changes something else in the control
+ * plane is NOT a bootstrap and stays fail-closed.
+ */
+function isBootstrapInstall(files = [], controlPlaneTouched = [], fileContents = {}) {
+  if (!controlPlaneTouched.length) return false;
+
+  const controlPlaneFiles = files.filter((file) =>
+    filePathCandidates(file).some((path) =>
+      matchesAny(DEFAULT_CONTROL_PLANE_PATHS, path),
+    ),
+  );
+  if (!controlPlaneFiles.length) return false;
+
+  // Every control-plane file must be newly added. "added" is GitHub's status
+  // for a file that did not exist on the base branch.
+  const allAdded = controlPlaneFiles.every(
+    (file) => String(file?.status || "").toLowerCase() === "added",
+  );
+  if (!allAdded) return false;
+
+  // Policy files are never bootstrapped silently: if one is present it must
+  // also be an addition, which the check above already required, but a policy
+  // change alongside a workflow addition is not a plain install.
+  const policyTouched = controlPlaneFiles.some((file) =>
+    filePathCandidates(file).some((path) =>
+      matchesAny([".aport/policy.yaml", ".aport/policy.yml"], path),
+    ),
+  );
+  if (policyTouched && controlPlaneFiles.length > 1) return false;
+
+  // `every`, not `some`: a PR that installs the guard AND adds an unrelated
+  // control-plane file is not a plain install, and downgrading it would hand
+  // the unrelated file the carve-out too.
+  return controlPlaneFiles.every((file) =>
+    installsAportGuard(file, fileContents),
+  );
+}
+
+function workflowAddedSource(file, fullContent) {
+  // An added file may arrive as a patch or as full content; either represents
+  // the whole new file, matching how the workflow scan below reads them.
+  if (!file?.patch) return String(fullContent || "");
+  return file.patch
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith("+") && !line.startsWith("+++"))
+    .map((line) => line.slice(1))
+    .join("\n");
+}
+
+/**
+ * Positive evidence that an added workflow installs this guard: a `uses:` step
+ * naming the action's own repository. Read from the added lines only, so a
+ * pre-existing mention elsewhere in the file cannot be replayed as evidence.
+ *
+ * The line must be a real workflow step, not merely text that looks like one.
+ * A `run: |` block can contain anything, including `uses: aporthq/...` inside a
+ * heredoc, and matching raw text would let an unrelated or hostile workflow
+ * claim the install carve-out.
+ */
+function installsAportGuard(file, fileContents = {}) {
+  const paths = filePathCandidates(file);
+  if (!paths.some(isWorkflow)) return false;
+
+  const source = workflowAddedSource(
+    file,
+    fileContentForPaths(paths, fileContents),
+  );
+
+  const refs = workflowStepUses(source);
+  if (!refs.some((ref) => isAportGuardActionRef(ref))) return false;
+
+  // Every other action step must be one an install actually needs. Anything
+  // else is a workflow doing more than installing the guard.
+  if (!refs.every((ref) => isAportGuardActionRef(ref) || isInstallSupportActionRef(ref))) {
+    return false;
+  }
+
+  // A `run:` step executes arbitrary code with the workflow's token. The
+  // shipped guard workflow has none, so its presence means this file is not
+  // just an install.
+  if (hasRunStep(source)) return false;
+
+  return true;
+}
+
+/**
+ * Steps a genuine install may carry besides the guard itself. Deliberately
+ * tiny: every entry widens what can claim the carve-out.
+ */
+const INSTALL_SUPPORT_ACTIONS = ["actions/checkout"];
+
+function isInstallSupportActionRef(ref) {
+  const slug = String(ref || "").split("@")[0].toLowerCase();
+  return INSTALL_SUPPORT_ACTIONS.includes(slug);
+}
+
+/**
+ * Whether the added source declares a `run:` step, ignoring text inside a block
+ * scalar (where `run:` is data, not a key).
+ */
+function hasRunStep(source) {
+  const lines = String(source || "").split(/\r?\n/);
+  let blockScalarIndent = null;
+  for (const raw of lines) {
+    if (!raw.trim()) continue;
+    const indent = raw.length - raw.trimStart().length;
+    if (blockScalarIndent !== null) {
+      if (indent > blockScalarIndent) continue;
+      blockScalarIndent = null;
+    }
+    const body = raw.replace(/^\s*(?:-\s*)?/, "");
+    if (/^["']?run["']?\s*:/.test(body)) return true;
+    if (/:\s*[|>][-+0-9]*\s*(?:#.*)?$/.test(raw)) blockScalarIndent = indent;
+  }
+  return false;
+}
+
+/**
+ * The reference must be the guard's own repository, optionally at a version.
+ * Compared on the slug so `notaporthq/policy-verify-action` and
+ * `aporthq/policy-verify-action-evil` do not qualify.
+ */
+function isAportGuardActionRef(ref) {
+  const slug = String(ref || "").split("@")[0];
+  return slug.toLowerCase() === APORT_ACTION_REPOSITORY;
+}
+
+/**
+ * Action references that appear as actual workflow steps (`steps[].uses`).
+ *
+ * YAML without a parser, so this is a structural approximation rather than a
+ * full load. Two things have to be true for a `uses:` line to count:
+ *
+ *   1. It is not inside a block scalar. `key: |` or `key: >` makes every
+ *      following line indented deeper than that key literal text, so anything
+ *      matched there is content, not structure.
+ *   2. It sits at a plausible step position: a `- uses:` sequence item, or a
+ *      `uses:` key in a mapping opened by a `- ` sequence item at the same
+ *      indent. A workflow nests jobs > <job> > steps > - step, so a step key is
+ *      always indented; a top-level `uses:` is not a workflow step.
+ */
+function workflowStepUses(source) {
+  const refs = [];
+  const lines = String(source || "").split(/\r?\n/);
+  // Indent of the key that opened the current block scalar, or null.
+  let blockScalarIndent = null;
+  // Indent of the most recent `- ` sequence item, so `uses:` written as a later
+  // key of that same step mapping is still recognised.
+  let sequenceItemIndent = null;
+
+  for (const rawLine of lines) {
+    if (!rawLine.trim()) continue;
+
+    const indent = leadingWhitespaceLength(rawLine);
+    if (blockScalarIndent !== null) {
+      // Still deeper than the introducing key, so this is literal text.
+      if (indent > blockScalarIndent) continue;
+      blockScalarIndent = null;
+    }
+
+    const line = stripYamlComment(rawLine);
+    const sequenceMatch = line.match(/^(\s*)-\s+/);
+    if (sequenceMatch) {
+      // The step mapping's keys line up with the text after the dash.
+      sequenceItemIndent = sequenceMatch[0].length;
+    } else if (sequenceItemIndent !== null && indent < sequenceItemIndent) {
+      // Dedented out of the sequence entirely.
+      sequenceItemIndent = null;
+    }
+
+    const usesMatch = line.match(
+      /^\s*(?:-\s*)?uses\s*:\s*['"]?([^'"\s#]+)['"]?\s*$/i,
+    );
+    if (usesMatch) {
+      const isSequenceItem = Boolean(sequenceMatch);
+      const isStepKey =
+        sequenceItemIndent !== null && indent === sequenceItemIndent;
+      // A step is always nested under jobs > <job> > steps, so indent > 0.
+      if (indent > 0 && (isSequenceItem || isStepKey)) {
+        refs.push(usesMatch[1]);
+      }
+      continue;
+    }
+
+    // `key: |`, `key: >` and their indicators (`|-`, `>+`, `|2`) open a block
+    // scalar whose body is everything indented deeper than this key.
+    if (/^\s*(?:-\s+)?[^:\r\n]+:\s*[|>][0-9+-]*\s*$/.test(line)) {
+      blockScalarIndent = indent;
+    }
+  }
+
+  return refs;
+}
+
+/**
+ * Does this PR introduce an action that is not pinned to a full commit SHA?
+ *
+ * Only asked when the trusted base policy sets require_pinned_actions. Such a
+ * repository has explicitly demanded pinning, and OAP.REPO.UNPINNED_ACTION is
+ * warning-level, so a bootstrap downgrade would leave the install PR with no
+ * blocking finding at all and the required check would never fail. The install
+ * carve-out therefore does not apply to installs that are themselves unpinned:
+ * fix the pins and the PR passes.
+ */
+function introducesUnpinnedActions({
+  files = [],
+  fileContents = {},
+  requirePinnedActions = false,
+} = {}) {
+  if (!requirePinnedActions) return false;
+
+  return files.some((file) => {
+    const paths = filePathCandidates(file);
+    if (!paths.some(isWorkflow)) return false;
+    const source = workflowAddedSource(file, fileContentForPaths(paths, fileContents));
+    return findUnpinnedActions(source).length > 0;
+  });
+}
+
+/**
+ * The carve-out exists for the pull request that installs the guard, so it only
+ * applies to pull-request style validation (`pull_request` and the merge queue
+ * re-validation of the same change).
+ *
+ * The push trigger exists to catch changes made directly on a protected branch,
+ * which is exactly the case the control-plane rule is fail-closed for. A direct
+ * push that adds a workflow naming this action must therefore stay high.
+ *
+ * Unknown or absent event names are treated as NOT a pull request: callers that
+ * do not pass an event get the fail-closed answer rather than a silent
+ * downgrade on push.
+ */
+function isInstallPullRequestEvent(eventName) {
+  // pull_request_target is deliberately NOT here. It runs with the base
+  // repository's secrets against head content the fork author controls, so it
+  // is the one event where downgrading a control-plane finding is worst, and
+  // README.md and CHANGELOG.md both already say the carve-out covers pull
+  // request and merge queue validation only. A guard workflow does not need it.
+  return ["pull_request", "merge_group"].includes(
+    String(eventName || "").toLowerCase(),
+  );
+}
+
 function detectStructuralFindings({
   files = [],
   fileContents = {},
@@ -145,6 +420,7 @@ function detectStructuralFindings({
   blockProtectedPaths = false,
   requirePinnedActions = false,
   evidenceTruncated = {},
+  eventName = "",
 } = {}) {
   const findings = [];
 
@@ -181,15 +457,35 @@ function detectStructuralFindings({
     ...protectedTouched,
     ...controlPlaneTouched,
   ]);
+  // A bootstrap install only downgrades THIS finding. Escalation and
+  // pull_request_target findings are raised separately below and are not
+  // affected, so an install PR that also does something dangerous still fails
+  // on that specific finding rather than on the mere fact that it touched the
+  // control plane. Unpinned actions are the exception: that finding is only
+  // warning-level, so an unpinned install is excluded from the carve-out
+  // outright rather than left with nothing blocking.
+  const bootstrap =
+    isInstallPullRequestEvent(eventName) &&
+    !blockProtectedPaths &&
+    isBootstrapInstall(files, controlPlaneTouched, fileContents) &&
+    !introducesUnpinnedActions({ files, fileContents, requirePinnedActions });
+
   if (protectedOrControlPlaneTouched.length) {
+    const blocking =
+      (controlPlaneTouched.length && !bootstrap) || blockProtectedPaths;
     findings.push({
       code: "OAP.REPO.PROTECTED_PATH_TOUCHED",
-      severity:
-        controlPlaneTouched.length || blockProtectedPaths ? "high" : "warning",
-      message: controlPlaneTouched.length
-        ? "Guard control-plane paths changed."
-        : "Protected repository paths changed.",
+      severity: blocking ? "high" : "warning",
+      message: bootstrap
+        ? "Guard control-plane paths added by a first-install pull request. "
+          + "Reported rather than blocked: every control-plane file here is new, "
+          + "so there is no existing guard configuration to weaken. Review the "
+          + "added files before merging."
+        : controlPlaneTouched.length
+          ? "Guard control-plane paths changed."
+          : "Protected repository paths changed.",
       paths: protectedOrControlPlaneTouched,
+      details: bootstrap ? { bootstrap_install: true } : undefined,
     });
   }
 

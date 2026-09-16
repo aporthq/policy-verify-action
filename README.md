@@ -155,6 +155,14 @@ Hosted mode treats a missing, fallback, or invalid APort decision signature as `
 
 Protected paths are warning-level by default to keep first-time setup low-friction. They tell reviewers and APort policy which files deserve extra attention. If a repository wants every protected-path touch to fail closed, set `block-protected-paths: true` after the team has tuned the path list and rollout process.
 
+Control-plane paths are the exception. `.github/workflows/**`, `.github/actions/**` and `.aport/policy.*` can change what the guard enforces, so a change there fails the check even when `block-protected-paths` is `false`.
+
+That rule has one carve-out, for the pull request that installs the guard. When every control-plane file in a PR is newly **added** and each one is a workflow whose `steps` install this action, the finding is reported as a warning rather than blocking, and the summary says so. There is no prior configuration to weaken on an install, and failing the PR that adds the workflow is how a check gets removed instead of adopted.
+
+The carve-out is narrow on purpose. It applies only to pull request and merge queue validation, never to a direct push. A PR still fails when it modifies or deletes an existing workflow, changes an existing `.aport` policy, adds any control-plane file that is not part of the install, or introduces a permission escalation or a `pull_request_target` trigger. Those raise their own findings, which the carve-out does not touch. Setting `block-protected-paths: true` opts out of it entirely.
+
+Unpinned actions are a conditional case. When the trusted base policy sets `github.require_pinned_actions: true`, an install that leaves any action unpinned loses the carve-out and fails, because `OAP.REPO.UNPINNED_ACTION` is only warning-level and would otherwise leave the PR with nothing blocking. Pin the actions and the install passes. Without `require_pinned_actions`, no unpinned-action finding is raised at all and an unpinned install passes as a warning.
+
 ## Outputs
 
 | Output | Description |
