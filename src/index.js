@@ -129,6 +129,9 @@ async function main() {
       requirePinnedActions: Boolean(
         parsedPolicy?.github?.require_pinned_actions,
       ),
+      // The first-install carve-out is for the installing pull request only.
+      // A direct push to a protected branch must stay fail-closed.
+      eventName: process.env.GITHUB_EVENT_NAME || "",
     }),
     ...repositoryPolicyFindings({
       policy: parsedPolicy,

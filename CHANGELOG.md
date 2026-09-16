@@ -5,6 +5,56 @@ All notable changes to the APort Policy Verify Action will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- Automated release workflow for `aporthq/policy-verify-action` that tags the next patch release after a synced PR is merged and updates major/minor convenience tags.
+- Conservative PR actor classification: `human`, `known_bot`, `coding_agent`, and `unknown_automation`.
+- APort commit trailer recognition for `APort-Session`, `APort-Decision`, and `APort-Agent`.
+- Report-only structural findings for protected paths, `pull_request_target`, workflow write-permission escalation, and OIDC token permission changes.
+- High-severity suspicious payload findings for encoded execution and remote shell execution introduced in sensitive workflow, action, build-config, policy, verifier, package, or script surfaces.
+- High-severity missing-evidence findings when GitHub omits patch/content data for sensitive execution or configuration surfaces.
+- Fixture-driven tests with real APortHQ PR payloads and zero false `coding_agent` classifications for human-authored fixtures.
+
+### Changed
+- Reframed the first public slice as report-only agent attribution and repository provenance.
+- Removed required APort account, passport, API key, hosted verifier call, failing enforcement, and default PR comments from the free Action path.
+- The Action now writes a GitHub job summary and exits 0.
+- Hosted verification payloads now send compact structural findings and avoid duplicate changed-file evidence, keeping repository guard requests within the verifier's hot-path request budget.
+
+### Fixed
+- The pull request that installs the guard no longer fails the check it is
+  installing. `.github/workflows/**` is a control-plane path and fail-closed
+  regardless of `block-protected-paths`, so a first install went red on its own
+  workflow file. When every control-plane file in a pull request is newly added
+  and each is a workflow whose `steps` install this action, it is now reported
+  as a warning, with `bootstrap_install` in the finding details. The carve-out
+  applies to pull request and merge queue validation only, never to a direct
+  push. Modifying or deleting an existing workflow, changing an existing
+  `.aport` policy, adding a control-plane file unrelated to the install, or
+  introducing a permission escalation or `pull_request_target` all still fail,
+  as does an unpinned install when the trusted base policy sets
+  `github.require_pinned_actions`. `block-protected-paths: true` opts out.
+- The guard marker is now read from parsed workflow steps rather than raw
+  lines, so a `run: |` block scalar quoting `uses: aporthq/policy-verify-action`
+  no longer makes an unrelated workflow look like an install.
+- README said protected paths were warning-level by default for low-friction
+  setup, which control-plane handling made unreachable. It now documents both
+  the control-plane rule and the install carve-out.
+
+### Security
+- Treat `id-token: write` as GitHub OIDC authentication permission, not repository write access. Newly introduced OIDC permission is still reported for review, while broad workflow write permissions remain high-severity.
+
+### Planned Features
+- Support for additional policy packs
+- Enhanced error reporting and debugging
+- Custom policy pack validation
+- Integration with GitHub security features
+- Advanced context mapping options
+- Performance optimizations
+
+---
+
 ## [1.0.0] - 2025-01-09
 
 ### Added
@@ -60,34 +110,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Manual dispatch with custom parameters
 - Integration with other CI/CD actions
 - Environment-specific policy enforcement
-
-## [Unreleased]
-
-### Changed
-- Reframed the first public slice as report-only agent attribution and repository provenance.
-- Removed required APort account, passport, API key, hosted verifier call, failing enforcement, and default PR comments from the free Action path.
-- The Action now writes a GitHub job summary and exits 0.
-- Hosted verification payloads now send compact structural findings and avoid duplicate changed-file evidence, keeping repository guard requests within the verifier's hot-path request budget.
-
-### Added
-- Automated release workflow for `aporthq/policy-verify-action` that tags the next patch release after a synced PR is merged and updates major/minor convenience tags.
-- Conservative PR actor classification: `human`, `known_bot`, `coding_agent`, and `unknown_automation`.
-- APort commit trailer recognition for `APort-Session`, `APort-Decision`, and `APort-Agent`.
-- Report-only structural findings for protected paths, `pull_request_target`, workflow write-permission escalation, and OIDC token permission changes.
-- High-severity suspicious payload findings for encoded execution and remote shell execution introduced in sensitive workflow, action, build-config, policy, verifier, package, or script surfaces.
-- High-severity missing-evidence findings when GitHub omits patch/content data for sensitive execution or configuration surfaces.
-- Fixture-driven tests with real APortHQ PR payloads and zero false `coding_agent` classifications for human-authored fixtures.
-
-### Security
-- Treat `id-token: write` as GitHub OIDC authentication permission, not repository write access. Newly introduced OIDC permission is still reported for review, while broad workflow write permissions remain high-severity.
-
-### Planned Features
-- Support for additional policy packs
-- Enhanced error reporting and debugging
-- Custom policy pack validation
-- Integration with GitHub security features
-- Advanced context mapping options
-- Performance optimizations
 
 ---
 
