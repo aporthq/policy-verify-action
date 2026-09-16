@@ -902,6 +902,29 @@ for (const [label, body] of [
   assert.equal(finding.details, undefined, `${label} must not be marked bootstrap`);
 }
 
+// Reusable workflows and quoted `uses` keys are executable too. They must be
+// parsed into the same allowlist instead of silently ignored while the guard
+// step buys the install carve-out.
+for (const [label, body] of [
+  ["a job-level reusable workflow", [
+    "+jobs:", "+  aport:", "+    steps:",
+    "+      - uses: aporthq/policy-verify-action@v1",
+    "+  reusable:", "+    uses: evil/reusable/.github/workflows/deploy.yml@v1"]],
+  ["a quoted non-allowlisted step key", [
+    "+jobs:", "+  aport:", "+    steps:",
+    "+      - uses: aporthq/policy-verify-action@v1",
+    "+      - \"uses\": evil/action@v1"]],
+]) {
+  const finding = onPullRequest({
+    files: [
+      { filename: ".github/workflows/aport-guard.yml", status: "added",
+        patch: ["@@", "+name: Install", "+on: [pull_request]", ...body].join("\n") },
+    ],
+  }).find((f) => f.code === "OAP.REPO.PROTECTED_PATH_TOUCHED");
+  assert.equal(finding.severity, "high", `${label} must not read as bootstrap`);
+  assert.equal(finding.details, undefined, `${label} must not be marked bootstrap`);
+}
+
 // A named step that carries `uses:` as a later key of the same step mapping is
 // a genuine install, matching how the shipped guard workflow is written.
 assert.equal(
@@ -932,7 +955,7 @@ for (const eventName of ["push", "", undefined, "schedule", "workflow_dispatch"]
 
 // Merge-queue re-validation sees the same pull request content, so it keeps the
 // downgrade. Otherwise an install that passed on the PR would fail on merge.
-for (const eventName of ["pull_request", "merge_group"]) {
+for (const eventName of ["pull_request", "pull_request_review", "merge_group"]) {
   assert.equal(
     detectStructuralFindings({ files: installFiles, eventName }).find(
       (f) => f.code === "OAP.REPO.PROTECTED_PATH_TOUCHED",
