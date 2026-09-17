@@ -271,20 +271,7 @@ function isInstallSupportActionRef(ref) {
  * scalar (where `run:` is data, not a key).
  */
 function hasRunStep(source) {
-  const lines = String(source || "").split(/\r?\n/);
-  let blockScalarIndent = null;
-  for (const raw of lines) {
-    if (!raw.trim()) continue;
-    const indent = raw.length - raw.trimStart().length;
-    if (blockScalarIndent !== null) {
-      if (indent > blockScalarIndent) continue;
-      blockScalarIndent = null;
-    }
-    const body = raw.replace(/^\s*(?:-\s*)?/, "");
-    if (/^["']?run["']?\s*:/.test(body)) return true;
-    if (/:\s*[|>][-+0-9]*\s*(?:#.*)?$/.test(raw)) blockScalarIndent = indent;
-  }
-  return false;
+  return scanWorkflowExecution(source).hasRunStep;
 }
 
 /**
@@ -295,6 +282,228 @@ function hasRunStep(source) {
 function isAportGuardActionRef(ref) {
   const slug = String(ref || "").split("@")[0];
   return slug.toLowerCase() === APORT_ACTION_REPOSITORY;
+}
+
+/**
+ * The `uses` value of a flow-style step mapping (`{ uses: a/b@v1, with: {...} }`),
+ * or null. Only the mapping's OWN key counts: a nested `with: { uses: ... }` is
+ * an input value, never a step that runs, and matching every `uses:` in the line
+ * let a workflow park the guard reference inside inputs and claim the install.
+ */
+function flowMappingUses(text) {
+  return flowMappingKeyValue(text, "uses");
+}
+
+function flowMappingHasRun(text) {
+  return flowMappingHasKey(text, "run");
+}
+
+function flowMappingHasKey(text, wantedKey) {
+  return flowMappingKeyValue(text, wantedKey, { returnBoolean: true }) === true;
+}
+
+function normalizeYamlNodePrefix(text) {
+  let value = String(text || "").trim();
+  let changed = true;
+  while (changed) {
+    changed = false;
+    const anchor = value.match(/^&[A-Za-z0-9_.-]+(?:\s+|$)(.*)$/);
+    if (anchor) {
+      value = anchor[1].trimStart();
+      changed = true;
+      continue;
+    }
+    const tag = value.match(/^![^\s]+(?:\s+|$)(.*)$/);
+    if (tag) {
+      value = tag[1].trimStart();
+      changed = true;
+    }
+  }
+  return value;
+}
+
+function flowMappingKeyValue(text, wantedKey, { returnBoolean = false } = {}) {
+  const body = String(text || "");
+  let depth = 0;
+  let quote = null;
+  let keyStart = -1;
+  for (let i = 0; i < body.length; i += 1) {
+    const char = body[i];
+    if (quote) {
+      if (quote === '"' && char === "\\") {
+        i += 1;
+        continue;
+      }
+      if (char === quote) quote = null;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (char === "{" || char === "[") {
+      depth += 1;
+      // Entering the outer mapping starts its first key; anything deeper is a
+      // nested value whose keys must be skipped.
+      if (depth === 1) keyStart = i + 1;
+      continue;
+    }
+    if (char === "}" || char === "]") {
+      depth -= 1;
+      if (depth === 1) keyStart = -1;
+      continue;
+    }
+    // A comma at depth 1 ends one entry of the outer mapping and starts the next.
+    if (char === "," && depth === 1) {
+      keyStart = i + 1;
+      continue;
+    }
+    if (char === ":" && depth === 1 && keyStart >= 0) {
+      const key = body.slice(keyStart, i).trim().replace(/^["']|["']$/g, "");
+      keyStart = -1;
+      if (key.toLowerCase() !== String(wantedKey || "").toLowerCase()) continue;
+      if (returnBoolean) return true;
+      return readFlowScalarValue(body, i + 1);
+    }
+  }
+  return returnBoolean ? false : null;
+}
+
+function readFlowScalarValue(text, start) {
+  const body = String(text || "");
+  let i = start;
+  while (i < body.length && /\s/.test(body[i])) i += 1;
+  const quote = body[i] === '"' || body[i] === "'" ? body[i] : null;
+  if (quote) {
+    let value = "";
+    for (i += 1; i < body.length; i += 1) {
+      const char = body[i];
+      if (quote === '"' && char === "\\") {
+        if (i + 1 < body.length) value += body[i + 1];
+        i += 1;
+        continue;
+      }
+      if (char === quote) return value;
+      value += char;
+    }
+    return value || null;
+  }
+  const value = body.slice(i).match(/^([^,}\]\s]+)/);
+  return value ? value[1] : null;
+}
+
+/**
+ * Every top-level `uses` of a flow sequence: `[{uses: a/b@v1}, {uses: c/d@v2}]`.
+ * Splits on the sequence's own commas so each mapping is read on its own terms.
+ */
+function flowSequenceUses(text) {
+  return flowSequenceMappings(text)
+    .map(flowMappingUses)
+    .filter(Boolean);
+}
+
+function flowSequenceHasRun(text) {
+  return flowSequenceMappings(text).some(flowMappingHasRun);
+}
+
+function flowSequenceMappings(text) {
+  const body = String(text || "");
+  const mappings = [];
+  let depth = 0;
+  let quote = null;
+  let itemStart = -1;
+  for (let i = 0; i < body.length; i += 1) {
+    const char = body[i];
+    if (quote) {
+      if (quote === '"' && char === "\\") {
+        i += 1;
+        continue;
+      }
+      if (char === quote) quote = null;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (char === "{" || char === "[") {
+      depth += 1;
+      if (depth === 2 && char === "{") itemStart = i;
+      continue;
+    }
+    if (char === "}" || char === "]") {
+      if (depth === 2 && char === "}" && itemStart >= 0) {
+        mappings.push(body.slice(itemStart, i + 1));
+        itemStart = -1;
+      }
+      depth -= 1;
+    }
+  }
+  return mappings;
+}
+
+function isFlowSequenceComplete(text) {
+  const body = String(text || "");
+  let depth = 0;
+  let quote = null;
+  let sawSequence = false;
+  for (let i = 0; i < body.length; i += 1) {
+    const char = body[i];
+    if (quote) {
+      if (quote === '"' && char === "\\") {
+        i += 1;
+        continue;
+      }
+      if (char === quote) quote = null;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (char === "[") {
+      sawSequence = true;
+      depth += 1;
+      continue;
+    }
+    if (char === "]") {
+      depth -= 1;
+      if (sawSequence && depth <= 0) return true;
+    }
+  }
+  return false;
+}
+
+function isFlowMappingComplete(text) {
+  const body = String(text || "");
+  let depth = 0;
+  let quote = null;
+  let sawMapping = false;
+  for (let i = 0; i < body.length; i += 1) {
+    const char = body[i];
+    if (quote) {
+      if (quote === '"' && char === "\\") {
+        i += 1;
+        continue;
+      }
+      if (char === quote) quote = null;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (char === "{") {
+      sawMapping = true;
+      depth += 1;
+      continue;
+    }
+    if (char === "}") {
+      depth -= 1;
+      if (sawMapping && depth <= 0) return true;
+    }
+  }
+  return false;
 }
 
 /**
@@ -316,14 +525,56 @@ function isAportGuardActionRef(ref) {
  * when the whole workflow is just the guard. A reusable workflow is executable
  * code too, so it must be surfaced to the allowlist instead of ignored.
  */
-function workflowExecutableUses(source) {
+function scanWorkflowExecution(source) {
   const refs = [];
+  let hasRunStepValue = false;
   const lines = String(source || "").split(/\r?\n/);
   // Indent of the key that opened the current block scalar, or null.
   let blockScalarIndent = null;
   // Indent of the most recent `- ` sequence item, so `uses:` written as a later
   // key of that same step mapping is still recognised.
   let sequenceItemIndent = null;
+  // Indent of the `steps:` key whose sequence we are inside, or null. Only a
+  // `uses:` under a steps sequence actually runs. Accepting any indented
+  // `uses:` let a workflow park the guard reference in inert data such as an
+  // `env:` mapping while running something else entirely.
+  let stepsIndent = null;
+  let stepsSequenceIndent = null;
+  // Indent of a `jobs.<id>.uses:` reusable-workflow call, which is executable
+  // but is not a step.
+  let jobIdIndent = null;
+  // Indent the active job's own keys sit at. Derived from the first key seen
+  // inside the job rather than assumed to be jobIdIndent + 2: a workflow
+  // indented four spaces per level put its `jobs.<id>.uses` reusable-workflow
+  // call outside the assumed column, so a hostile call was never returned and
+  // the file still read as a plain guard install.
+  let jobKeyIndent = null;
+  // Indent of the `jobs:` key itself, so its direct children can be identified.
+  let jobsIndent = null;
+  let flowStepsBuffer = null;
+  let flowStepMappingBuffer = null;
+  let explicitJobKeyIndent = null;
+  let explicitStepsKeyIndent = null;
+
+  function processStepsInlineValue(inline) {
+    const value = normalizeYamlNodePrefix(inline);
+    if (!value) return;
+    if (value.startsWith("[")) {
+      if (isFlowSequenceComplete(value)) {
+        refs.push(...flowSequenceUses(value));
+        hasRunStepValue = hasRunStepValue || flowSequenceHasRun(value);
+      } else {
+        flowStepsBuffer = value;
+      }
+      return;
+    }
+    // An aliased step list may resolve to executable YAML anchored elsewhere.
+    // This lightweight scanner does not resolve anchors, so fail closed for the
+    // bootstrap decision instead of treating the sequence as empty.
+    if (/^\*[A-Za-z0-9_.-]+$/.test(value)) {
+      hasRunStepValue = true;
+    }
+  }
 
   for (const rawLine of lines) {
     if (!rawLine.trim()) continue;
@@ -336,10 +587,191 @@ function workflowExecutableUses(source) {
     }
 
     const line = stripYamlComment(rawLine);
-    const sequenceMatch = line.match(/^(\s*)-\s+/);
+    if (!line.trim()) continue;
+
+    if (flowStepsBuffer !== null) {
+      flowStepsBuffer += `\n${line.trim()}`;
+      if (isFlowSequenceComplete(flowStepsBuffer)) {
+        refs.push(...flowSequenceUses(flowStepsBuffer));
+        hasRunStepValue = hasRunStepValue || flowSequenceHasRun(flowStepsBuffer);
+        flowStepsBuffer = null;
+      }
+      continue;
+    }
+
+    if (flowStepMappingBuffer !== null) {
+      flowStepMappingBuffer += `\n${line.trim()}`;
+      if (isFlowMappingComplete(flowStepMappingBuffer)) {
+        const flowRef = flowMappingUses(flowStepMappingBuffer);
+        if (flowRef) refs.push(flowRef);
+        hasRunStepValue =
+          hasRunStepValue || flowMappingHasRun(flowStepMappingBuffer);
+        flowStepMappingBuffer = null;
+      }
+      continue;
+    }
+
+    if (explicitJobKeyIndent !== null) {
+      if (/^\s*:\s*(?:&[A-Za-z0-9_.-]+)?\s*$/.test(line)) {
+        jobKeyIndent = null;
+        jobIdIndent = explicitJobKeyIndent;
+        explicitJobKeyIndent = null;
+        continue;
+      }
+      explicitJobKeyIndent = null;
+    }
+
+    if (explicitStepsKeyIndent !== null) {
+      const explicitStepsValue = line.match(
+        /^\s*:\s*(?:&[A-Za-z0-9_.-]+)?\s*(.*)$/i,
+      );
+      if (explicitStepsValue) {
+        stepsIndent = explicitStepsKeyIndent;
+        stepsSequenceIndent = null;
+        sequenceItemIndent = null;
+        explicitStepsKeyIndent = null;
+        processStepsInlineValue(explicitStepsValue[1]);
+        continue;
+      }
+      explicitStepsKeyIndent = null;
+    }
+
+    // Leaving the steps sequence: any key at or above the `steps:` indent.
+    if (stepsIndent !== null && indent <= stepsIndent && !/^\s*-(?:\s+|\s*$)/.test(line)) {
+      stepsIndent = null;
+      stepsSequenceIndent = null;
+      sequenceItemIndent = null;
+    }
+    // `jobs:` opens the job map; its direct children are job ids.
+    const jobsMatch = line.match(/^(\s*)["']?jobs["']?\s*:\s*$/i);
+    if (jobsMatch) {
+      jobsIndent = indent;
+      jobIdIndent = null;
+      jobKeyIndent = null;
+      explicitJobKeyIndent = null;
+      explicitStepsKeyIndent = null;
+      continue;
+    }
+    if (jobsIndent !== null && indent <= jobsIndent && !/^\s*-(?:\s+|\s*$)/.test(line)) {
+      jobsIndent = null;
+      jobIdIndent = null;
+      jobKeyIndent = null;
+      explicitJobKeyIndent = null;
+      explicitStepsKeyIndent = null;
+    }
+    const isDirectJobEntry =
+      jobsIndent !== null &&
+      indent > jobsIndent &&
+      (jobIdIndent === null || indent <= jobIdIndent);
+    if (
+      jobIdIndent !== null &&
+      indent > jobIdIndent &&
+      (jobKeyIndent === null || indent <= jobKeyIndent) &&
+      /^\s*\?\s+["']?steps["']?\s*$/.test(line)
+    ) {
+      jobKeyIndent = indent;
+      explicitStepsKeyIndent = indent;
+      continue;
+    }
+    if (
+      isDirectJobEntry &&
+      /^\s*\?\s+[A-Za-z0-9_-]+\s*$/.test(line)
+    ) {
+      explicitJobKeyIndent = indent;
+      continue;
+    }
+    if (
+      jobsIndent !== null &&
+      indent > jobsIndent &&
+      /^\s*["']?[A-Za-z0-9_-]+["']?\s*:\s*(?:&[A-Za-z0-9_.-]+)?\s*$/.test(line)
+    ) {
+      // A job id, if it is the first level under `jobs:`.
+      if (jobIdIndent === null || indent <= jobIdIndent) {
+        // A new job id ends the previous job, so its key column is unknown again.
+        jobKeyIndent = null;
+        jobIdIndent = indent;
+        explicitStepsKeyIndent = null;
+      }
+    }
+    // The shallowest key strictly inside the job id is the job's own key column,
+    // whatever the file's indent step happens to be.
+    if (
+      jobIdIndent !== null &&
+      indent > jobIdIndent &&
+      !/^\s*-(?:\s+|\s*$)/.test(line) &&
+      /^\s*["']?[A-Za-z0-9_.-]+["']?\s*:/.test(line) &&
+      (jobKeyIndent === null || indent < jobKeyIndent)
+    ) {
+      jobKeyIndent = indent;
+    }
+
+    const jobFlowMatch = line.match(
+      /^\s*["']?[A-Za-z0-9_-]+["']?\s*:\s*(\{.*)$/i,
+    );
+    if (isDirectJobEntry && jobFlowMatch) {
+      const ref = flowMappingUses(jobFlowMatch[1]);
+      if (ref) refs.push(ref);
+      jobKeyIndent = null;
+      jobIdIndent = indent;
+      continue;
+    }
+
+    const stepsMatch = line.match(/^\s*["']?steps["']?\s*:\s*(.*)$/i);
+    const isJobKeyContext =
+      jobIdIndent !== null && jobKeyIndent !== null && indent === jobKeyIndent;
+    if (stepsMatch && isJobKeyContext) {
+      stepsIndent = indent;
+      stepsSequenceIndent = null;
+      sequenceItemIndent = null;
+      processStepsInlineValue(stepsMatch[1]);
+      continue;
+    }
+
+    const sequenceMatch = line.match(/^(\s*)-(\s*)(.*)$/);
+    const isStepSequenceItem =
+      Boolean(sequenceMatch) &&
+      stepsIndent !== null &&
+      (stepsSequenceIndent === null
+        ? indent >= stepsIndent
+        : indent === stepsSequenceIndent);
     if (sequenceMatch) {
-      // The step mapping's keys line up with the text after the dash.
-      sequenceItemIndent = sequenceMatch[0].length;
+      if (isStepSequenceItem) {
+        if (stepsSequenceIndent === null) stepsSequenceIndent = indent;
+        // The step mapping's keys line up with the text after the dash. A bare
+        // `-` has no text after it; YAML still treats the following indented
+        // mapping as the step body, so use the conventional child column.
+        const itemText = sequenceMatch[3] || "";
+        sequenceItemIndent = itemText.trim()
+          ? sequenceMatch[1].length + 1 + sequenceMatch[2].length
+          : sequenceMatch[1].length + 2;
+        // A flow-style step item: `- { uses: a/b@v1, with: ... }`.
+        const flow = normalizeYamlNodePrefix(itemText);
+        if (flow.startsWith("{")) {
+          if (isFlowMappingComplete(flow)) {
+            const flowRef = flowMappingUses(flow);
+            if (flowRef) refs.push(flowRef);
+            hasRunStepValue = hasRunStepValue || flowMappingHasRun(flow);
+          } else {
+            flowStepMappingBuffer = flow;
+          }
+          continue;
+        }
+        if (/^\*[A-Za-z0-9_.-]+$/.test(flow)) {
+          hasRunStepValue = true;
+          continue;
+        }
+        const inlineUsesMatch = flow.match(
+          /^["']?uses["']?\s*:\s*['"]?([^'"\s#]+)['"]?\s*$/i,
+        );
+        if (inlineUsesMatch) {
+          refs.push(inlineUsesMatch[1]);
+          continue;
+        }
+        if (/^["']?run["']?\s*:/i.test(flow)) {
+          hasRunStepValue = true;
+          continue;
+        }
+      }
     } else if (sequenceItemIndent !== null && indent < sequenceItemIndent) {
       // Dedented out of the sequence entirely.
       sequenceItemIndent = null;
@@ -349,12 +781,40 @@ function workflowExecutableUses(source) {
       /^\s*(?:-\s*)?["']?uses["']?\s*:\s*['"]?([^'"\s#]+)['"]?\s*$/i,
     );
     if (usesMatch) {
-      const isSequenceItem = Boolean(sequenceMatch);
+      const isSequenceItem = isStepSequenceItem;
       const isStepKey =
         sequenceItemIndent !== null && indent === sequenceItemIndent;
-      const isNestedExecutableKey = indent > 0 && !isSequenceItem;
-      if (indent > 0 && (isSequenceItem || isStepKey || isNestedExecutableKey)) {
+      // Inside a steps sequence, a `uses:` is either the item itself or a key
+      // of the item's mapping. Outside one, the only executable `uses:` is a
+      // job calling a reusable workflow: `jobs.<id>.uses`, which sits exactly
+      // one level inside the job id, is not itself a sequence item, and is the
+      // job's own key. Everything else -- env:, with:, inputs:, outputs:, a
+      // strategy matrix -- is data and must not count, however deeply nested.
+      // A sequence item may sit at the SAME column as the `steps:` key that
+      // owns it -- valid YAML, and common in hand-written workflows. Requiring
+      // a deeper indent hid the guard step of such a file, so a clean first
+      // install was blocked at high severity.
+      const inSteps =
+        stepsIndent !== null &&
+        (indent > stepsIndent || (isSequenceItem && indent === stepsIndent));
+      const isReusableJobCall =
+        !inSteps &&
+        jobIdIndent !== null &&
+        jobKeyIndent !== null &&
+        indent === jobKeyIndent &&
+        !isSequenceItem;
+      if (inSteps ? isSequenceItem || isStepKey : isReusableJobCall) {
         refs.push(usesMatch[1]);
+      }
+      continue;
+    }
+
+    const runMatch = line.match(/^\s*(?:-\s*)?["']?run["']?\s*:/i);
+    if (runMatch) {
+      const isStepKey =
+        sequenceItemIndent !== null && indent === sequenceItemIndent;
+      if (isStepSequenceItem || isStepKey) {
+        hasRunStepValue = true;
       }
       continue;
     }
@@ -366,7 +826,14 @@ function workflowExecutableUses(source) {
     }
   }
 
-  return refs;
+  return {
+    usesRefs: refs,
+    hasRunStep: hasRunStepValue,
+  };
+}
+
+function workflowExecutableUses(source) {
+  return scanWorkflowExecution(source).usesRefs;
 }
 
 /**
@@ -866,7 +1333,27 @@ function findSuspiciousContentMatches(source) {
 }
 
 function stripYamlComment(line) {
-  return String(line || "").replace(/\s+#.*$/, "");
+  const text = String(line || "");
+  let quote = null;
+  for (let i = 0; i < text.length; i += 1) {
+    const char = text[i];
+    if (quote) {
+      if (quote === '"' && char === "\\") {
+        i += 1;
+        continue;
+      }
+      if (char === quote) quote = null;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (char === "#" && (i === 0 || /\s/.test(text[i - 1]))) {
+      return text.slice(0, i).replace(/\s+$/, "");
+    }
+  }
+  return text;
 }
 
 function leadingWhitespaceLength(line) {
@@ -876,9 +1363,18 @@ function leadingWhitespaceLength(line) {
 
 function findUnpinnedActions(source) {
   const unpinned = [];
-  let match;
-  while ((match = USES_ACTION_RE.exec(source))) {
-    const actionRef = match[1];
+  const actionRefs = new Set(workflowExecutableUses(source));
+  if (!hasWorkflowExecutionScope(source) || actionRefs.size === 0) {
+    USES_ACTION_RE.lastIndex = 0;
+    let match;
+    while ((match = USES_ACTION_RE.exec(source))) {
+      actionRefs.add(match[1]);
+    }
+    for (const ref of flowStyleActionRefs(source)) {
+      actionRefs.add(ref);
+    }
+  }
+  for (const actionRef of actionRefs) {
     if (actionRef.startsWith("./") || actionRef.startsWith("../")) continue;
     if (actionRef.startsWith("docker://")) continue;
     const atIndex = actionRef.lastIndexOf("@");
@@ -892,7 +1388,49 @@ function findUnpinnedActions(source) {
   return unpinned;
 }
 
+function hasWorkflowExecutionScope(source) {
+  return /^\s*["']?(?:jobs|steps)["']?\s*:/im.test(String(source || "")) ||
+    /^\s*\?\s+["']?steps["']?\s*$/im.test(String(source || ""));
+}
+
+function flowStyleActionRefs(source) {
+  const refs = [];
+  const text = String(source || "");
+  const lines = text.split(/\r?\n/);
+  let flowBuffer = null;
+
+  for (const rawLine of lines) {
+    const line = stripYamlComment(rawLine);
+    if (!line.trim()) continue;
+
+    if (flowBuffer !== null) {
+      flowBuffer += `\n${line.trim()}`;
+      if (isFlowMappingComplete(flowBuffer)) {
+        const ref = flowMappingUses(flowBuffer);
+        if (ref) refs.push(ref);
+        flowBuffer = null;
+      }
+      continue;
+    }
+
+    const sequenceMatch = line.match(/^\s*-\s*(.*)$/);
+    if (!sequenceMatch) continue;
+    const item = normalizeYamlNodePrefix(sequenceMatch[1]);
+    if (!item.startsWith("{")) continue;
+    if (isFlowMappingComplete(item)) {
+      const ref = flowMappingUses(item);
+      if (ref) refs.push(ref);
+    } else {
+      flowBuffer = item;
+    }
+  }
+
+  return refs;
+}
+
 module.exports = {
+  // Exported for tests: the executable-position scan is the security boundary.
+  workflowExecutableUses,
   DEFAULT_CONTROL_PLANE_PATHS,
   DEFAULT_PROTECTED_PATHS,
   DEFAULT_SUSPICIOUS_CONTENT_PATHS,
