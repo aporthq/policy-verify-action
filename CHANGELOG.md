@@ -22,6 +22,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The Action now writes a GitHub job summary and exits 0.
 - Hosted verification payloads now send compact structural findings and avoid duplicate changed-file evidence, keeping repository guard requests within the verifier's hot-path request budget.
 
+### Security
+- The install carve-out no longer accepts a workflow that carries a guard step
+  alongside other work. A file with a real `uses: aporthq/policy-verify-action`
+  step plus a `run:` exfiltrating `GITHUB_TOKEN` produced no blocking finding,
+  because the id-token/contents pair reads as OIDC and is only a warning. The
+  added workflow must now hold as an install as a whole file: no `run:` steps,
+  and no action steps besides the guard and `actions/checkout`.
+- `pull_request_target` no longer receives the carve-out. It runs with the base
+  repository's secrets against fork-authored head content, and the README and
+  this changelog both already described the carve-out as pull request and merge
+  queue validation only.
+
 ### Fixed
 - The pull request that installs the guard no longer fails the check it is
   installing. `.github/workflows/**` is a control-plane path and fail-closed
