@@ -182,4 +182,177 @@ assert.strictEqual(
   "",
 );
 
+// The claim call to action.
+//
+// A hosted run issues a passport for this repository from its OIDC token and
+// that passport starts unclaimed, so the link belongs where the maintainers
+// already are: in the comment the run just posted.
+const claimCtaSummary = renderSummary({
+  repository: "acme/widgets",
+  prNumber: 7,
+  actor: "someone",
+  attribution: {},
+  structuralFindings: [],
+  repositoryPolicy: {},
+  configuredMode: "hosted",
+  verification: {
+    mode: "hosted",
+    provenance: "ci_time",
+    oidcRepositoryPassport: true,
+    decision: { decision_id: "dec_1", agent_id: "ap_abc123", allow: true },
+  },
+  eventName: "pull_request",
+  workflowRef: "",
+  warnings: [],
+  willFail: false,
+});
+
+assert.match(claimCtaSummary, /## This Repository's Passport/);
+// Neutral about claim state: hosted issuance reuses the same passport, and
+// this summary has no claim-state signal, so it must not keep telling a
+// claimed repository that its passport is unclaimed.
+assert.ok(!/is unclaimed/.test(claimCtaSummary));
+assert.match(claimCtaSummary, /https:\/\/aport\.io\/claim\?agent_id=ap_abc123/);
+// The requirement is stated up front rather than discovered after signing in.
+assert.match(claimCtaSummary, /admin/);
+assert.match(claimCtaSummary, /maintain/);
+
+// Evidence-only mode issues no passport, so a claim link would point at nothing
+// and teach people the link is noise.
+const evidenceOnlySummary = renderSummary({
+  repository: "acme/widgets",
+  prNumber: 7,
+  actor: "someone",
+  attribution: {},
+  structuralFindings: [],
+  repositoryPolicy: {},
+  configuredMode: "auto",
+  verification: { mode: "evidence-only" },
+  eventName: "pull_request",
+  workflowRef: "",
+  warnings: [],
+  willFail: false,
+});
+
+assert.ok(!evidenceOnlySummary.includes("This Repository's Passport"));
+
 console.log("OK summary.test.js");
+
+// A hosted run with a MANAGED agent id skips OIDC issuance, so its passport is
+// not a repository guard and a repository claim link can only end in
+// not_a_repository_passport.
+const managedSummary = renderSummary({
+  repository: "acme/widgets",
+  prNumber: 7,
+  actor: "someone",
+  attribution: {},
+  structuralFindings: [],
+  repositoryPolicy: {},
+  configuredMode: "hosted",
+  verification: {
+    mode: "hosted",
+    provenance: "ci_time",
+    oidcRepositoryPassport: false,
+    decision: { decision_id: "dec_2", agent_id: "ap_managed", allow: true },
+  },
+  eventName: "pull_request",
+  workflowRef: "",
+  warnings: [],
+  willFail: false,
+});
+
+assert.ok(!managedSummary.includes("This Repository's Passport"));
+
+console.log("OK summary.test.js (claim gating)");
+
+// Everything a claim-link case holds constant. Four of them differ only in the
+// api-url and the agent id, and spelling the other ten fields out four times
+// made the one line under test the hardest thing to find.
+const claimCtaBase = {
+  repository: "acme/widgets",
+  prNumber: 7,
+  actor: "someone",
+  attribution: {},
+  structuralFindings: [],
+  repositoryPolicy: {},
+  configuredMode: "hosted",
+  eventName: "pull_request",
+  workflowRef: "",
+  warnings: [],
+  willFail: false,
+};
+
+// The claim link must point at the deployment that issued the passport.
+// Hard-coding aport.io sent maintainers of a staging or self-hosted deployment
+// to production, where the agent id does not exist and the claim is not_found.
+const stagingSummary = renderSummary({
+  ...claimCtaBase,
+  verification: {
+    mode: "hosted",
+    provenance: "ci_time",
+    oidcRepositoryPassport: true,
+    decision: { decision_id: "dec_3", agent_id: "ap_staging", allow: true },
+  },
+  apiUrl: "https://staging.aport.io",
+});
+
+assert.match(stagingSummary, /https:\/\/staging\.aport\.io\/claim\?agent_id=ap_staging/);
+assert.ok(!stagingSummary.includes("https://aport.io/claim"));
+
+// The default split-host API form still resolves to the app origin.
+const defaultHostSummary = renderSummary({
+  ...claimCtaBase,
+  verification: {
+    mode: "hosted",
+    provenance: "ci_time",
+    oidcRepositoryPassport: true,
+    decision: { decision_id: "dec_4", agent_id: "ap_default", allow: true },
+  },
+  apiUrl: "https://api.aport.io",
+});
+
+assert.match(defaultHostSummary, /https:\/\/aport\.io\/claim\?agent_id=ap_default/);
+
+// A self-hosted deployment is not always on port 443.
+//
+// The first version of this derivation used `url.hostname`, which drops the
+// port: http://gh.internal:8787 became http://gh.internal, and the maintainer
+// followed a link to whatever answers on port 80 of that host. `url.host`
+// keeps the authority intact.
+const selfHostedSummary = renderSummary({
+  ...claimCtaBase,
+  verification: {
+    mode: "hosted",
+    provenance: "ci_time",
+    oidcRepositoryPassport: true,
+    decision: { decision_id: "dec_5", agent_id: "ap_selfhosted", allow: true },
+  },
+  apiUrl: "http://gh.internal:8787",
+});
+
+assert.match(
+  selfHostedSummary,
+  /http:\/\/gh\.internal:8787\/claim\?agent_id=ap_selfhosted/,
+);
+assert.ok(!selfHostedSummary.includes("http://gh.internal/claim"));
+
+// And a deployment served under a path prefix keeps the prefix. `api-url`
+// names the API, so the trailing /api is the API's own and comes off; what is
+// left in front of it is where the application lives.
+const prefixedSummary = renderSummary({
+  ...claimCtaBase,
+  verification: {
+    mode: "hosted",
+    provenance: "ci_time",
+    oidcRepositoryPassport: true,
+    decision: { decision_id: "dec_6", agent_id: "ap_prefixed", allow: true },
+  },
+  apiUrl: "https://gh.internal:9443/aport/api",
+});
+
+assert.match(
+  prefixedSummary,
+  /https:\/\/gh\.internal:9443\/aport\/claim\?agent_id=ap_prefixed/,
+);
+
+console.log("OK summary.test.js (claim url follows deployment)");

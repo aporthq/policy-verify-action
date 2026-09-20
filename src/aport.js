@@ -167,6 +167,12 @@ async function runHostedVerify({
   return {
     ...result,
     signatureVerified: true,
+    // Whether THIS run issued or refreshed a repository passport from the OIDC
+    // token. A managed agent-id that is not an auto-issued GitHub identity
+    // skips issuance entirely, and the summary must not offer a repository
+    // claim link for a passport that was never issued that way — following it
+    // can only end in not_a_repository_passport or already_claimed.
+    oidcRepositoryPassport: Boolean(issue),
   };
 }
 
