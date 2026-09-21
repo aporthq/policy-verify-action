@@ -89,8 +89,90 @@ const APORT_ACTION_REPOSITORY = "aporthq/policy-verify-action";
 const SHA_PIN_RE = /^[a-f0-9]{40}$/i;
 const SUSPICIOUS_PATTERNS = [
   {
-    code: "observed-global-o-marker",
-    regex: /global\s*\.\s*o\s*=\s*['"]5-3-132-du['"]/i,
+    // The campaign id, in any assignment form — and only in one.
+    //
+    // This replaces a rule that recognised only the `global.o` property with
+    // the `-du` suffix. That form is one of at least three the same campaign
+    // ships, and a sweep of six repositories found the other two far more
+    // often. The property names seen, assigned the campaign id:
+    //
+    //   .o          (id suffixed `-du`)   three postcss configs
+    //   .i                                aport-vault, aport.id
+    //   ['_V']                            briefing-ai, zoning-briefing
+    //
+    // Deliberately written without the assignment spelled out: this comment
+    // would otherwise match the rule below and flag this very file.
+    //
+    // The variable name is the part the author varies; the id is what stays.
+    // Matching the bare literal anywhere was too much: a scanner, an incident
+    // note or a package field that merely quotes the id would raise a
+    // high-severity finding and block an unrelated protected-path change. The
+    // assignment context is what makes it a payload rather than a mention —
+    // this file and the tests below name the id and must not flag themselves.
+    code: "observed-campaign-marker",
+    regex:
+      /global\s*(?:\.\s*[A-Za-z_$][\w$]*|\[\s*['"][^'"\r\n]{1,64}['"]\s*\])\s*=\s*['"]5-3-132(?:-[a-z0-9]+)?['"]/i,
+  },
+  {
+    // The delivery shape, independent of any payload string.
+    //
+    // Every instance is: the real file, a run of padding spaces long enough
+    // to push what follows off the end of a line in a diff or an editor, then
+    // the code. This caught instances the marker rules missed, including one
+    // whose body is base64 and never appears in plaintext.
+    //
+    // Anchored on code BEFORE the run, not on what follows it.
+    //
+    // The first version exempted a run followed by `*` or `/` to spare
+    // Babel-style indented block comments. That handed back a one-character
+    // bypass: `<padding>/* sep */evil()` matched the exemption and produced no
+    // finding at all.
+    //
+    // Requiring a non-space before the run describes the injection instead of
+    // the exception — real code, padding, then more code, all on one line.
+    // An indented comment continuation has a newline before its indentation,
+    // so it cannot match, and no exemption is needed.
+    //
+    // The run is ANY horizontal whitespace, not spaces alone. Spelling it
+    // `[ ]{150,}` left two bypasses open for the price of one character: a
+    // single tab after the spaces made the trailing `\S` fail, and a run of
+    // alternating spaces and tabs never contained 150 consecutive spaces at
+    // all. Both still push the payload off the end of a line, which is the
+    // whole point of the padding. `[^\S\r\n]` is every whitespace character
+    // except the line breaks — excluding those is what keeps the run from
+    // spanning lines and re-admitting the indented-comment case.
+    //
+    // It is also what makes this cheap. The old form retried the run from every
+    // successive space and backtracked across the remainder: 80,000 spaces with
+    // no trailing non-space took 12.2 SECONDS, so a few such lines in an
+    // untrusted pull request could stall the guard. Anchoring on a leading
+    // non-space means the engine skips the run in one step — the same input
+    // now takes 1.4ms.
+    code: "padded-appended-code",
+    regex: /\S[^\S\r\n]{150,}\S/,
+  },
+  {
+    // A line no file on these paths has any business containing.
+    //
+    // This exists because the rule above kept losing to one-character
+    // variations — a `/*` prefix, a trailing tab, a space/tab run, padding at
+    // the start of a line, tabs counted by code point rather than display
+    // width. Each is a different way to arrange whitespace, and enumerating
+    // them is a losing game.
+    //
+    // They all share one consequence: the payload ends up on a single
+    // enormous line. Measured across these repositories, the longest line in
+    // any legitimate file on the scanned paths is 455 characters (one
+    // package.json; every other config and lockfile is under 280). The
+    // captured payloads run 7,416 to 80,230. A 1,000-character threshold sits
+    // in a sixteen-fold gap, so it does not describe the disguise at all —
+    // only the size of what is being hidden.
+    //
+    // It is not a replacement for the padding rule: a SHORT payload behind
+    // long padding stays under this threshold, which is what the rule above
+    // and the exec/base64 rules below are for. Layered, not substituted.
+    code: "oversized-source-line",
+    regex: /[^\r\n]{1000,}/,
   },
   {
     code: "eval-base64-decoder",
@@ -1429,6 +1511,7 @@ function flowStyleActionRefs(source) {
 }
 
 module.exports = {
+  isSuspiciousContentPath,
   // Exported for tests: the executable-position scan is the security boundary.
   workflowExecutableUses,
   DEFAULT_CONTROL_PLANE_PATHS,
