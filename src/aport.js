@@ -1,3 +1,4 @@
+const { canonicalize: stableStringify, decisionSignaturePayload } = require("./canonical-json");
 const fs = require("fs");
 const https = require("https");
 const { createHash, createPublicKey, verify } = require("crypto");
@@ -510,37 +511,7 @@ function normalizeKid(kid) {
 }
 
 function canonicalDecisionPayload(decision) {
-  const hasControlPlaneFields =
-    decision.outcome ||
-    decision.provenance ||
-    decision.policy_hash ||
-    decision.policy_version ||
-    decision.github;
-  const payload = omitUndefined({
-    decision_id: decision.decision_id,
-    passport_id: decision.passport_id,
-    policy_id: decision.policy_id,
-    agent_id: decision.agent_id,
-    owner_id: decision.owner_id,
-    assurance_level: decision.assurance_level,
-    allow: decision.allow,
-    reasons: decision.reasons,
-    issued_at: decision.issued_at,
-    expires_at: decision.expires_at,
-    passport_digest: decision.passport_digest,
-    ...(hasControlPlaneFields
-      ? {
-          outcome: decision.outcome,
-          provenance: decision.provenance,
-          policy_hash: decision.policy_hash,
-          policy_version: decision.policy_version,
-          github: decision.github,
-        }
-      : {}),
-  });
-  return hasControlPlaneFields
-    ? stableStringify(payload)
-    : JSON.stringify(payload, Object.keys(payload).sort());
+  return stableStringify(decisionSignaturePayload(decision));
 }
 
 function omitUndefined(value) {
@@ -576,20 +547,7 @@ function base64UrlToBuffer(value) {
   return Buffer.from(padded, "base64");
 }
 
-function stableStringify(value) {
-  if (value === null || typeof value !== "object") {
-    return JSON.stringify(value);
-  }
-  if (Array.isArray(value)) {
-    return `[${value.map((item) => stableStringify(item)).join(",")}]`;
-  }
-  const keys = Object.keys(value)
-    .filter((key) => value[key] !== undefined)
-    .sort();
-  return `{${keys
-    .map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`)
-    .join(",")}}`;
-}
+
 
 module.exports = {
   POLICY_ID,
