@@ -190,6 +190,9 @@ async function main() {
     workflowRef: process.env.GITHUB_WORKFLOW_REF || "",
     warnings,
     willFail,
+    // So the claim link points at the deployment that issued the passport,
+    // not at production regardless of configuration.
+    apiUrl: process.env.APORT_API_URL || "https://api.aport.io",
   });
 
   writeSummary(summary);
