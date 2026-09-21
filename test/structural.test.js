@@ -6,6 +6,7 @@ const {
   introducesOidcWritePermission,
   introducesWritePermissions,
   patchIntroducesOidcWritePermission,
+  isSuspiciousContentPath,
 } = require("../src/structural");
 
 const findings = detectStructuralFindings({
@@ -1475,3 +1476,157 @@ assert.deepEqual(
 );
 
 console.log("OK structural.test.js");
+
+// The campaign ships more than one variable name, and the rule that only knew
+// `global.o` found almost none of it. A sweep of six repositories on
+// 2026-09-20 turned up three forms; these pin all three, because the next one
+// will differ again and the id is the part that does not.
+const campaignVariants = [
+  ["global.o", "+global.o = '5-3-" + "132-du';"],
+  ["global.i", "+global.i='5-3-" + "132';var _$_46e0=(function(r,i){});"],
+  ["global['_V']", "+global['_V']='5-3-" + "132';global['r']=require;"],
+];
+for (const [label, line] of campaignVariants) {
+  const variantFindings = detectStructuralFindings({
+    files: [
+      {
+        filename: "tailwind.config.js",
+        patch: ["@@", line, "+module.exports = {};"].join("\n"),
+      },
+    ],
+  });
+  const variantFinding = variantFindings.find(
+    (finding) => finding.code === "OAP.REPO.SUSPICIOUS_OBFUSCATION",
+  );
+  assert(variantFinding, `campaign variant not detected: ${label}`);
+  assert.equal(variantFinding.severity, "high");
+}
+
+// The delivery shape, caught without any payload string. Every instance found
+// was the real file, a long run of padding spaces, then the code — which is
+// what hides it from a reviewer scrolling a diff.
+const paddedFindings = detectStructuralFindings({
+  files: [
+    {
+      filename: "postcss.config.js",
+      patch: [
+        "@@",
+        "+module.exports = { plugins: {} };" + " ".repeat(200) + "var x=1;",
+      ].join("\n"),
+    },
+  ],
+});
+assert(
+  paddedFindings.find(
+    (finding) => finding.code === "OAP.REPO.SUSPICIOUS_OBFUSCATION",
+  ),
+  "padded appended code not detected",
+);
+
+// Everything below goes through detectStructuralFindings rather than a local
+// copy of the regex. An earlier version of these tests declared its own
+// PADDED/CAMPAIGN constants and asserted against those, which meant they
+// passed no matter what the rule in src/structural.js actually did.
+const obfuscationIn = (patchBody, filename = "tailwind.config.js") =>
+  detectStructuralFindings({
+    files: [{ filename, patch: ["@@", ...patchBody].join("\n") }],
+  }).some((finding) => finding.code === "OAP.REPO.SUSPICIOUS_OBFUSCATION");
+
+// An indented block comment is the one benign source of runs that long seen in
+// practice — Babel emits them — so the padding rule must not fire on it. The
+// rule achieves that by requiring code BEFORE the run rather than by exempting
+// what follows it, which is what an earlier version did.
+assert(
+  !obfuscationIn([
+    "+function visit() {}",
+    "+" + " ".repeat(240) + "* legacy support, right?",
+  ]),
+  "padding rule must not fire on an indented block comment",
+);
+
+// Exempting a `*`/`/` suffix handed back a one-character bypass: prefix the
+// hidden code with a block comment and the whole match was rejected.
+assert(
+  obfuscationIn([
+    "+module.exports = {};" + " ".repeat(200) + "/* sep */evilCode()",
+  ]),
+  "a comment-prefixed appended payload must still be detected",
+);
+assert(
+  obfuscationIn(["+const a = 1;" + " ".repeat(200) + "/x/.test(s)&&evil()"]),
+  "a regex-literal-prefixed appended payload must still be detected",
+);
+
+// Padding is any horizontal whitespace, not spaces alone. Restricting the run
+// to `[ ]` left two bypasses open for one extra character: a tab after the
+// spaces made the trailing non-space test fail, and a run of alternating
+// spaces and tabs never held 150 consecutive spaces at all. Both still push
+// the payload off the end of a line, which is the entire point of it.
+assert(
+  obfuscationIn(["+module.exports={};" + " ".repeat(200) + "\tevilCode()"]),
+  "a tab-suffixed padded payload must still be detected",
+);
+assert(
+  obfuscationIn(["+const a=1;" + " \t".repeat(120) + "evil()"]),
+  "a mixed space/tab padding run must still be detected",
+);
+
+// A long whitespace run with nothing after it used to be retried from every
+// successive space, backtracking across the remainder: 80,000 spaces took over
+// twelve seconds, which a few lines in an untrusted pull request could use to
+// stall the guard. Anchoring on a leading non-space makes it one pass.
+const bombStart = process.hrtime.bigint();
+obfuscationIn(["+x" + " ".repeat(80000)]);
+const bombMs = Number(process.hrtime.bigint() - bombStart) / 1e6;
+assert(
+  bombMs < 1000,
+  `padding rule must not backtrack quadratically (took ${bombMs.toFixed(0)}ms)`,
+);
+
+// The rule names the campaign id, so a mere mention of it must not be flagged —
+// a scanner, an incident note, or the rule file itself. Only an assignment is a
+// payload.
+assert(
+  !obfuscationIn(["+// The IOC is '5-3-" + "132-du' per the incident note."]),
+  "a bare mention of the campaign id must not be flagged",
+);
+const ruleSource = require("fs").readFileSync(
+  require("path").join(__dirname, "../src/structural.js"),
+  "utf8",
+);
+// The filename matters. An earlier version used "src/structural.js", which
+// matches nothing in DEFAULT_SUSPICIOUS_CONTENT_PATHS — detectStructuralFindings
+// skipped the file before reading a byte of it, so the assertion passed however
+// the source looked. Verified: with the old path, planting a real campaign
+// assignment in src/structural.js still left this suite green.
+const ruleSourcePath = ".github/actions/structural-rules.js";
+assert(
+  isSuspiciousContentPath(ruleSourcePath),
+  "the self-scan must use a path the content scan actually covers",
+);
+assert(
+  !obfuscationIn(
+    ruleSource.split("\n").map((line) => "+" + line),
+    ruleSourcePath,
+  ),
+  "the rule file must not flag itself",
+);
+
+// A line no legitimate file on these paths carries. Measured across the repos
+// this guard protects: the longest line in any real config or lockfile is 455
+// characters; the captured payloads run 7,416 to 80,230. This is the rule that
+// does not care how the padding was arranged.
+assert(
+  obfuscationIn(["+module.exports={};" + "x".repeat(1200)]),
+  "an oversized source line must be detected",
+);
+assert(
+  obfuscationIn(["+" + " ".repeat(200) + "x".repeat(900)]),
+  "padding at the start of an added line must still be caught by length",
+);
+assert(
+  !obfuscationIn(["+" + "x".repeat(455)]),
+  "the longest legitimate line seen must not be flagged",
+);
+
+console.log("OK structural.test.js (campaign variants and delivery shape)");

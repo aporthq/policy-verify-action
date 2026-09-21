@@ -158,6 +158,70 @@ function escapeMarkdownText(value) {
     .replace(/\]/g, "\\]");
 }
 
+/**
+ * The application origin that goes with a configured API url.
+ *
+ * The claim link was hard-coded to aport.io. When `api-url` points at staging
+ * or a self-hosted deployment, the passport is issued THERE — so that link sent
+ * maintainers to production, where the agent id does not exist and the claim
+ * returns not_found. The app and the API share a host in the default
+ * deployment (aport.io/api/… and aport.io/claim) and `api.` is stripped for the
+ * split-host form, so the origin follows the configuration rather than a
+ * constant.
+ */
+function appBaseFromApiUrl(apiUrl) {
+  try {
+    const url = new URL(apiUrl);
+    // `host`, not `hostname`. hostname drops the port, so a self-hosted
+    // `api-url` of http://gh.internal:8787 produced http://gh.internal and sent
+    // maintainers to whatever answers on port 80 — which for a self-hosted
+    // deployment is usually nothing.
+    const host = url.host.replace(/^api\./, "");
+    // A deployment served under a path prefix keeps it. `api-url` names the
+    // API, so a trailing /api or /api/v1 belongs to the API rather than to the
+    // application and comes off; anything before it is the application's base.
+    const path = url.pathname.replace(/\/+$/, "").replace(/\/api(\/v\d+)?$/, "");
+    return `${url.protocol}//${host}${path}`;
+  } catch {
+    return "https://aport.io";
+  }
+}
+
+/**
+ * The passport call to action.
+ *
+ * A hosted-mode run issues a passport for this repository from its OIDC token,
+ * and it starts unclaimed because we cannot know who to email. Claiming it is
+ * how the repository's maintainers reach their own audit logs, so the link
+ * belongs where they already are: in the comment the run just posted.
+ *
+ * DELIBERATELY NEUTRAL ABOUT WHETHER IT IS CLAIMED. Hosted issuance reuses the
+ * same passport on every run, and this summary has no claim-state signal to
+ * read — the verification result carries a decision, not a passport. Asserting
+ * "this passport is unclaimed" on every run would keep saying it long after
+ * someone claimed it, and send their colleagues through OAuth to be told
+ * `already_claimed`. So the copy works either way: the link is worth following
+ * whether you are claiming it or opening the one you already own.
+ */
+function buildClaimMarkdown({ agentId, oidcRepositoryPassport, apiUrl }) {
+  // Gated on whether THIS run actually issued or refreshed a repository
+  // passport from the OIDC token, not on hosted enforcement.
+  //
+  // Those are not the same: a run configured with a managed agent-id and API
+  // key is hosted, skips OIDC issuance, and its passport is not a repository
+  // guard at all. Offering a repository claim link there sends someone through
+  // OAuth to be told not_a_repository_passport.
+  if (!agentId || !oidcRepositoryPassport) return "";
+  const claimUrl = `${appBaseFromApiUrl(apiUrl)}/claim?agent_id=${encodeURIComponent(agentId)}`;
+  return `## This Repository's Passport
+
+${inlineCode(agentId)} guards this repository. Open it to see this repository's decision history and audit trail — and to claim it, if nobody has yet.
+
+[Open ${inlineCode(agentId)}](${claimUrl}) — claiming signs you in with GitHub and checks that your account has **admin** or **maintain** on this repository.
+
+`;
+}
+
 function renderSummary({
   repository,
   prNumber,
@@ -171,6 +235,7 @@ function renderSummary({
   workflowRef,
   warnings,
   willFail,
+  apiUrl,
 }) {
   const decision = verification?.decision;
   const provenance = verification?.provenance || "unattributed";
@@ -250,7 +315,7 @@ ${signalRows(attribution.signals)}
 ${findingsList(structuralFindings)}
 
 ${warnings?.length ? `## Warnings\n\n${warnings.map((warning) => `- ${escapeMarkdownText(warning)}`).join("\n")}\n` : ""}
-
+${buildClaimMarkdown({ agentId: decision?.agent_id, oidcRepositoryPassport: verification?.oidcRepositoryPassport, apiUrl })}
 ## Next Move
 
 - Make this a required check in GitHub branch protection or rulesets for merge-time enforcement.
