@@ -1,3 +1,4 @@
+const { branchFromGitRef } = require("./git-ref");
 const { collectChangedFileEvidence } = require("./path-evidence");
 
 function buildVerifyContext({
@@ -96,9 +97,9 @@ function buildVerifyContext({
     },
     repository,
     action,
-    branch: pr.head?.ref || refNameFromGitRef(mergeGroup.head_ref) || process.env.GITHUB_HEAD_REF || process.env.GITHUB_REF_NAME || "",
-    base_branch: pr.base?.ref || refNameFromGitRef(mergeGroup.base_ref) || process.env.GITHUB_BASE_REF || undefined,
-    head_branch: pr.head?.ref || refNameFromGitRef(mergeGroup.head_ref) || process.env.GITHUB_HEAD_REF || undefined,
+    branch: pr.head?.ref || branchFromGitRef(mergeGroup.head_ref) || process.env.GITHUB_HEAD_REF || process.env.GITHUB_REF_NAME || "",
+    base_branch: pr.base?.ref || branchFromGitRef(mergeGroup.base_ref) || process.env.GITHUB_BASE_REF || undefined,
+    head_branch: pr.head?.ref || branchFromGitRef(mergeGroup.head_ref) || process.env.GITHUB_HEAD_REF || undefined,
     sha,
     ...(headSha ? { head_sha: headSha } : {}),
     lines_added: linesAdded,
@@ -115,8 +116,16 @@ function compactPushClassificationForVerify(classification) {
   copyStringField(compact, classification, "push_classification_reason", 120);
   copyStringField(compact, classification, "merge_commit_sha", 40);
   copyStringField(compact, classification, "merge_base_branch", 120);
+  copyBooleanField(compact, classification, "push_forced");
+  copyBooleanField(compact, classification, "push_to_default_branch");
+  copyStringField(compact, classification, "default_branch", 120);
 
   return compact;
+}
+
+function copyBooleanField(target, source, field) {
+  if (typeof source[field] !== "boolean") return;
+  target[field] = source[field];
 }
 
 function compactStructuralFindingsForVerify(findings = []) {
@@ -183,12 +192,6 @@ function normalizeEventAction(event) {
   if (eventAction === "opened") return "pr.create";
   if (eventAction === "closed" && event.pull_request?.merged) return "pr.merge";
   return "pr.update";
-}
-
-function refNameFromGitRef(ref) {
-  const value = String(ref || "");
-  if (value.startsWith("refs/heads/")) return value.slice("refs/heads/".length);
-  return value;
 }
 
 function makeIdempotencyKey({ repository, action, prNumber, sha, runId }) {

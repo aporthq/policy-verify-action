@@ -1,10 +1,18 @@
 const assert = require("assert");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
 const {
   basePolicyReadFindings,
   buildAttributionInput,
+  fatalPushClassification,
   fatalRequiresHosted,
+  fatalRequiresProtectedPush,
+  handleFatalError,
+  hostedStructuralFindings,
   parseBoolean,
   parseList,
+  pushLookupOverrides,
   readManagedCredentials,
   resolvePolicyBranch,
   shouldFailWorkflow,
@@ -237,6 +245,62 @@ assert.equal(
 );
 assert.equal(shouldFailWorkflow("evidence-only", { success: false }), false);
 
+// Default-branch protection is the only thing that fails a report-only run,
+// and it does so in every mode.
+assert.equal(
+  shouldFailWorkflow("auto", { success: true }, [], { blocked: true }),
+  true,
+);
+assert.equal(
+  shouldFailWorkflow("evidence-only", { success: false }, [], { blocked: true }),
+  true,
+);
+assert.equal(
+  shouldFailWorkflow(
+    "hosted",
+    { success: true, decision: { allow: true } },
+    [{ code: "OAP.REPO.DIRECT_PUSH_DEFAULT_BRANCH", severity: "high" }],
+    { blocked: true },
+  ),
+  true,
+);
+assert.equal(
+  shouldFailWorkflow("auto", { success: true }, [], { blocked: false }),
+  false,
+);
+// A warning-level force-push finding with protection off never blocks.
+assert.equal(
+  shouldFailWorkflow(
+    "auto",
+    { success: true },
+    [{ code: "OAP.REPO.FORCE_PUSH", severity: "warning" }],
+    { enabled: false, blocked: false },
+  ),
+  false,
+);
+assert.equal(
+  shouldFailWorkflow(
+    "hosted",
+    { success: true, decision: { allow: true } },
+    [{ code: "OAP.REPO.FORCE_PUSH", severity: "warning" }],
+    { enabled: false, blocked: false },
+  ),
+  false,
+);
+
+assert.deepEqual(pushLookupOverrides({}), {});
+assert.deepEqual(pushLookupOverrides({ APORT_PUSH_LOOKUP_DELAY_MS: "" }), {});
+assert.deepEqual(pushLookupOverrides({ APORT_PUSH_LOOKUP_DELAY_MS: "abc" }), {});
+assert.deepEqual(pushLookupOverrides({ APORT_PUSH_LOOKUP_DELAY_MS: "-5" }), {});
+assert.deepEqual(
+  pushLookupOverrides({ APORT_PUSH_LOOKUP_DELAY_MS: "0" }),
+  { delayMs: 0 },
+);
+assert.deepEqual(
+  pushLookupOverrides({ APORT_PUSH_LOOKUP_DELAY_MS: "250" }),
+  { delayMs: 250 },
+);
+
 assert.deepEqual(
   basePolicyReadFindings({ source: ".aport/policy.yaml" }, [
     "Could not read base file .aport/policy.yaml from GitHub API (500): server error",
@@ -262,6 +326,252 @@ assert.equal(
   ])[0].severity,
   "high",
 );
+
+// The default-branch push findings never go to the hosted verifier; every
+// other finding does.
+const pushFinding = { code: "OAP.REPO.DIRECT_PUSH_DEFAULT_BRANCH", severity: "high" };
+const forceFinding = { code: "OAP.REPO.FORCE_PUSH", severity: "warning" };
+const pathFinding = { code: "OAP.REPO.PROTECTED_PATH", severity: "warning" };
+assert.deepEqual(
+  hostedStructuralFindings([pathFinding, pushFinding, forceFinding], {
+    findings: [pushFinding, forceFinding],
+  }),
+  [pathFinding],
+);
+assert.deepEqual(hostedStructuralFindings([pathFinding], null), [pathFinding]);
+assert.deepEqual(hostedStructuralFindings([], { findings: [pushFinding] }), []);
+
+// A fatal error on a protected push fails the step; anywhere else the
+// existing hosted rule decides.
+assert.equal(
+  fatalRequiresProtectedPush({ GITHUB_EVENT_NAME: "push", APORT_PROTECT_DEFAULT_BRANCH: "true" }),
+  true,
+);
+assert.equal(
+  fatalRequiresProtectedPush({ GITHUB_EVENT_NAME: "push", APORT_PROTECT_DEFAULT_BRANCH: "false" }),
+  false,
+);
+assert.equal(
+  fatalRequiresProtectedPush({ GITHUB_EVENT_NAME: "pull_request", APORT_PROTECT_DEFAULT_BRANCH: "true" }),
+  false,
+);
+assert.equal(fatalRequiresProtectedPush({}), false);
+// The fatal path has the same scope as the evaluation: only a push to the
+// default branch fails, a tag push never does, and an unknown default branch
+// fails closed.
+const fatalPushEnv = { GITHUB_EVENT_NAME: "push", APORT_PROTECT_DEFAULT_BRANCH: "true" };
+const mainDefault = { repository: { default_branch: "main" } };
+assert.equal(
+  fatalRequiresProtectedPush(fatalPushEnv, { ref: "refs/heads/main", ...mainDefault }),
+  true,
+);
+assert.equal(
+  fatalPushClassification(fatalPushEnv, { ref: "refs/heads/main", ...mainDefault }),
+  "unknown",
+);
+assert.equal(
+  fatalRequiresProtectedPush(fatalPushEnv, { ref: "refs/heads/feature/x", ...mainDefault }),
+  false,
+);
+assert.equal(
+  fatalRequiresProtectedPush(fatalPushEnv, { ref: "refs/tags/v1", ...mainDefault }),
+  false,
+);
+assert.equal(
+  fatalPushClassification(fatalPushEnv, { ref: "refs/tags/v1", ...mainDefault }),
+  "not_push",
+);
+assert.equal(
+  fatalRequiresProtectedPush(
+    fatalPushEnv,
+    { ref: "refs/heads/main", before: "0".repeat(40), created: true, ...mainDefault },
+  ),
+  false,
+);
+assert.equal(
+  fatalPushClassification(
+    fatalPushEnv,
+    { ref: "refs/heads/main", before: "0".repeat(40), created: true, ...mainDefault },
+  ),
+  "created",
+);
+assert.equal(
+  fatalRequiresProtectedPush(
+    fatalPushEnv,
+    { ref: "refs/heads/main", before: "0".repeat(40), created: true, forced: true, ...mainDefault },
+  ),
+  true,
+);
+assert.equal(
+  fatalRequiresProtectedPush(
+    { ...fatalPushEnv, GITHUB_REF: "refs/tags/v1", GITHUB_REF_TYPE: "tag", GITHUB_REF_NAME: "v1" },
+    mainDefault,
+  ),
+  false,
+);
+assert.equal(
+  fatalRequiresProtectedPush(
+    { ...fatalPushEnv, GITHUB_REF: "refs/heads/feature/x" },
+    mainDefault,
+  ),
+  false,
+);
+assert.equal(
+  fatalRequiresProtectedPush({ ...fatalPushEnv, GITHUB_REF: "refs/heads/main" }, mainDefault),
+  true,
+);
+// The default-branch input stands in for a payload without the name.
+assert.equal(
+  fatalRequiresProtectedPush(
+    { ...fatalPushEnv, APORT_DEFAULT_BRANCH: "trunk" },
+    { ref: "refs/heads/feature/x" },
+  ),
+  false,
+);
+assert.equal(
+  fatalRequiresProtectedPush(
+    { ...fatalPushEnv, APORT_DEFAULT_BRANCH: "trunk" },
+    { ref: "refs/heads/trunk" },
+  ),
+  true,
+);
+// No default branch anywhere: fail closed for a branch push.
+assert.equal(
+  fatalRequiresProtectedPush(fatalPushEnv, { ref: "refs/heads/feature/x" }),
+  true,
+);
+// The input off: never.
+assert.equal(
+  fatalRequiresProtectedPush(
+    { GITHUB_EVENT_NAME: "push", APORT_PROTECT_DEFAULT_BRANCH: "false" },
+    { ref: "refs/heads/main", ...mainDefault },
+  ),
+  false,
+);
+
+function withFatalEnv(env, run, eventPayload = null) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aport-fatal-"));
+  const outputPath = path.join(dir, "output.txt");
+  const summaryPath = path.join(dir, "summary.md");
+  fs.writeFileSync(outputPath, "");
+  fs.writeFileSync(summaryPath, "");
+  if (eventPayload) {
+    const eventPath = path.join(dir, "event.json");
+    fs.writeFileSync(eventPath, JSON.stringify(eventPayload));
+    env = { ...env, GITHUB_EVENT_PATH: eventPath };
+  }
+  const saved = {};
+  // GITHUB_REF and friends are cleared too: a CI runner sets them, and the
+  // fatal path reads them to tell a default-branch push from any other.
+  const keys = [
+    "GITHUB_EVENT_NAME",
+    "GITHUB_EVENT_PATH",
+    "GITHUB_OUTPUT",
+    "GITHUB_STEP_SUMMARY",
+    "GITHUB_REF",
+    "GITHUB_REF_NAME",
+    "GITHUB_REF_TYPE",
+    "APORT_MODE",
+    "APORT_PROTECT_DEFAULT_BRANCH",
+    "APORT_DEFAULT_BRANCH",
+  ];
+  for (const key of keys) {
+    saved[key] = process.env[key];
+    delete process.env[key];
+  }
+  Object.assign(process.env, { GITHUB_OUTPUT: outputPath, GITHUB_STEP_SUMMARY: summaryPath, APORT_MODE: "evidence-only" }, env);
+  const exitCode = process.exitCode;
+  process.exitCode = undefined;
+  const write = process.stdout.write;
+  let stdout = "";
+  process.stdout.write = (chunk) => {
+    stdout += chunk;
+    return true;
+  };
+  try {
+    run();
+    return {
+      exitCode: process.exitCode,
+      stdout,
+      output: fs.readFileSync(outputPath, "utf8"),
+      summary: fs.readFileSync(summaryPath, "utf8"),
+    };
+  } finally {
+    process.stdout.write = write;
+    process.exitCode = exitCode;
+    for (const key of keys) {
+      if (saved[key] === undefined) delete process.env[key];
+      else process.env[key] = saved[key];
+    }
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+const fatalProtected = withFatalEnv(
+  { GITHUB_EVENT_NAME: "push", APORT_PROTECT_DEFAULT_BRANCH: "true" },
+  () => handleFatalError(new Error("boom")),
+);
+assert.equal(fatalProtected.exitCode, 1);
+assert.match(fatalProtected.output, /^push-classification=unknown$/m);
+assert.match(fatalProtected.summary, /Default branch protection could not complete/);
+assert.match(fatalProtected.summary, /Error: boom/);
+assert.match(fatalProtected.stdout, /::error title=APort Repository Guard could not complete::boom/);
+
+// A push to another branch with the input on: report-only, even on a fatal
+// error, because the protection never applied to it.
+const fatalCreatedBranch = withFatalEnv(
+  {
+    GITHUB_EVENT_NAME: "push",
+    APORT_PROTECT_DEFAULT_BRANCH: "true",
+  },
+  () => handleFatalError(new Error("boom")),
+  {
+    ref: "refs/heads/main",
+    before: "0".repeat(40),
+    created: true,
+    repository: { default_branch: "main" },
+  },
+);
+assert.equal(fatalCreatedBranch.exitCode, undefined);
+assert.match(fatalCreatedBranch.output, /^push-classification=created$/m);
+assert.match(fatalCreatedBranch.summary, /Report-only mode could not complete/);
+assert.ok(!fatalCreatedBranch.stdout.includes("::error title=APort Repository Guard could not complete::"));
+
+const fatalOtherBranch = withFatalEnv(
+  {
+    GITHUB_EVENT_NAME: "push",
+    APORT_PROTECT_DEFAULT_BRANCH: "true",
+    GITHUB_REF: "refs/heads/feature/x",
+    APORT_DEFAULT_BRANCH: "main",
+  },
+  () => handleFatalError(new Error("boom")),
+);
+assert.equal(fatalOtherBranch.exitCode, undefined);
+assert.match(fatalOtherBranch.output, /^push-classification=unknown$/m);
+assert.match(fatalOtherBranch.summary, /Report-only mode could not complete/);
+assert.ok(!fatalOtherBranch.stdout.includes("::error title=APort Repository Guard could not complete::"));
+
+const fatalReportOnly = withFatalEnv(
+  { GITHUB_EVENT_NAME: "push", APORT_PROTECT_DEFAULT_BRANCH: "false" },
+  () => handleFatalError(new Error("boom")),
+);
+assert.equal(fatalReportOnly.exitCode, undefined);
+assert.match(fatalReportOnly.output, /^push-classification=unknown$/m);
+assert.match(fatalReportOnly.summary, /Report-only mode could not complete/);
+
+const fatalPullRequest = withFatalEnv(
+  { GITHUB_EVENT_NAME: "pull_request", APORT_PROTECT_DEFAULT_BRANCH: "true" },
+  () => handleFatalError(new Error("boom")),
+);
+assert.equal(fatalPullRequest.exitCode, undefined);
+assert.match(fatalPullRequest.output, /^push-classification=not_push$/m);
+
+const fatalHosted = withFatalEnv(
+  { GITHUB_EVENT_NAME: "pull_request", APORT_MODE: "hosted" },
+  () => handleFatalError(new Error("boom")),
+);
+assert.equal(fatalHosted.exitCode, 1);
+assert.match(fatalHosted.summary, /Hosted verification could not complete/);
 
 const reviewAttribution = buildAttributionInput({
   event: {

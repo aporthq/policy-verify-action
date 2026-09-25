@@ -1,3 +1,5 @@
+const { describeBlockReason, describeProtectionState } = require("./push-protection");
+
 function emitRunLog({
   repository,
   prNumber,
@@ -6,6 +8,7 @@ function emitRunLog({
   structuralFindings = [],
   warnings = [],
   willFail = false,
+  pushProtection = null,
 } = {}) {
   logLine("APort Repository Guard");
   logLine("-----------------------");
@@ -13,6 +16,10 @@ function emitRunLog({
   logLine(`Pull request: ${prNumber ? `#${prNumber}` : "-"}`);
   logLine(`Mode: ${sanitizePlainLogValue(configuredMode || verification.mode || "auto")}`);
   logLine(`Verification: ${sanitizePlainLogValue(verification.mode || "-")}`);
+  if (pushProtection && pushProtection.classification !== "not_push") {
+    logLine(`Push classification: ${sanitizePlainLogValue(pushProtection.classification || "-")}`);
+    logLine(`Default branch protection: ${describeProtectionState(pushProtection)}`);
+  }
 
   const decision = verification.decision;
   if (decision) {
@@ -49,7 +56,9 @@ function emitRunLog({
     emitAnnotation(
       "error",
       "APort Repository Guard blocked this workflow",
-      "Hosted enforcement failed because APort returned a deny decision, hosted verification failed, or a high/error structural finding was detected.",
+      pushProtection?.blocked
+        ? describeBlockReason(pushProtection)
+        : "Hosted enforcement failed because APort returned a deny decision, hosted verification failed, or a high/error structural finding was detected.",
     );
   }
 

@@ -42,8 +42,19 @@ inputs:
     description: "Fail hosted verification when protected paths are changed. Keep false for low-friction rollout; set true for security-critical repos."
     required: false
     default: "false"
+  protect-default-branch:
+    description: "Fail the step on a push to the repository default branch that was forced or that is not the merge of a merged pull request. Works in every mode. Runs after the push lands, so pair it with a GitHub ruleset."
+    required: false
+    default: "false"
+  default-branch:
+    description: "Optional name of the repository default branch, used when the push payload does not carry repository.default_branch. Otherwise the Action reads it from the payload, then from GET /repos/{owner}/{repo}."
+    required: false
+    default: ""
 
 outputs:
+  push-classification:
+    description: "How a push event was classified: direct, merged_pull_request, forced, created (the push created the branch), unknown (the classification could not be completed), or not_push for other events and for a push whose ref is not a branch, such as a tag"
+    value: ${{ steps.aport.outputs.push-classification }}
   actor-class:
     description: "Classified PR actor: human, known_bot, coding_agent, unknown_automation, or unattributed"
     value: ${{ steps.aport.outputs.actor-class }}
@@ -79,5 +90,7 @@ runs:
         APORT_PASSPORT_PATH: ${{ inputs.passport-path }}
         APORT_PROTECTED_PATHS: ${{ inputs.protected-paths }}
         APORT_BLOCK_PROTECTED_PATHS: ${{ inputs.block-protected-paths }}
+        APORT_PROTECT_DEFAULT_BRANCH: ${{ inputs.protect-default-branch }}
+        APORT_DEFAULT_BRANCH: ${{ inputs.default-branch }}
         GITHUB_TOKEN: ${{ github.token }}
       run: node "$GITHUB_ACTION_PATH/src/index.js"
