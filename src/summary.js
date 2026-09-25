@@ -1,3 +1,5 @@
+const { describeBlockReason, describeProtectionState } = require("./push-protection");
+
 function row(label, value) {
   return `| ${escapeTableCell(label)} | ${escapeTableCell(value || "-")} |`;
 }
@@ -42,7 +44,15 @@ function summaryStatus({
   willFail,
   verification,
   structuralFindings = [],
+  pushProtection = null,
 }) {
+  if (willFail && pushProtection?.blocked) {
+    return {
+      label: "Blocked",
+      tone: `APort stopped this workflow: ${describeBlockReason(pushProtection)}`,
+    };
+  }
+
   if (willFail) {
     return {
       label: "Blocked",
@@ -236,6 +246,7 @@ function renderSummary({
   warnings,
   willFail,
   apiUrl,
+  pushProtection = null,
 }) {
   const decision = verification?.decision;
   const provenance = verification?.provenance || "unattributed";
@@ -263,14 +274,25 @@ function renderSummary({
     willFail,
     verification,
     structuralFindings,
+    pushProtection,
   });
   const badgeMarkdown = buildWorkflowBadgeMarkdown({
     repository,
     workflowRef,
   });
+  const protectionEnabled = Boolean(pushProtection?.enabled);
+  const isPushEvent = eventName === "push";
   const meaning = hostedEnforcement
-    ? "Hosted enforcement is enabled. A deny decision or high/error structural finding fails this workflow."
-    : "This check is report-only and always exits 0 unless you explicitly enable hosted enforcement.";
+    ? `Hosted enforcement is enabled. A deny decision or high/error structural finding fails this workflow.${protectionEnabled ? " `protect-default-branch` is also enabled, so a forced or direct push to the default branch fails it." : ""}`
+    : protectionEnabled
+      ? "This check is report-only for pull requests. `protect-default-branch` is enabled, so a forced push or a direct push to the default branch fails this workflow."
+      : "This check is report-only and always exits 0 unless you explicitly enable hosted enforcement.";
+  const pushRows = isPushEvent
+    ? [
+        row("Push classification", pushProtection?.classification || ""),
+        row("Default branch protection", describeProtectionState(pushProtection)),
+      ]
+    : [];
 
   return `<img src="https://aport.io/porter-repository-guard.svg" alt="Porter, the APort Repository Guard mascot" width="72" align="right" />
 
@@ -286,6 +308,7 @@ ${[
   row("Repository", repository),
   row("Pull request", prNumber ? `#${prNumber}` : ""),
   row("Event", eventName || ""),
+  ...pushRows,
   row("Actor", actor),
   row("Actor class", attribution.class),
   row("Confidence", attribution.confidence),

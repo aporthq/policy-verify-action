@@ -356,3 +356,179 @@ assert.match(
 );
 
 console.log("OK summary.test.js (claim url follows deployment)");
+
+// Default-branch protection in the summary.
+const pushBase = {
+  repository: "acme/widgets",
+  prNumber: "",
+  actor: "someone",
+  attribution: { class: "human", confidence: "high", signals: [] },
+  repositoryPolicy: {},
+  configuredMode: "auto",
+  verification: { mode: "evidence-only" },
+  eventName: "push",
+  workflowRef: "",
+  warnings: [],
+};
+
+const blockedDirect = renderSummary({
+  ...pushBase,
+  structuralFindings: [
+    {
+      code: "OAP.REPO.DIRECT_PUSH_DEFAULT_BRANCH",
+      severity: "high",
+      message: "Direct push to the default branch main is not the merge commit of a merged pull request.",
+    },
+  ],
+  willFail: true,
+  pushProtection: {
+    enabled: true,
+    applies: true,
+    blocked: true,
+    reason: "direct",
+    classification: "direct",
+    defaultBranch: "main",
+    branch: "main",
+  },
+});
+assert.match(blockedDirect, /\*\*Blocked\.\*\* APort stopped this workflow: protect-default-branch is enabled and the push to main is not the merge commit of a merged pull request\./);
+assert.match(blockedDirect, /\| Push classification \| direct \|/);
+assert.match(blockedDirect, /\| Default branch protection \| enabled \|/);
+assert.match(blockedDirect, /`protect-default-branch` is enabled, so a forced push or a direct push to the default branch fails this workflow\./);
+assert.ok(!blockedDirect.includes("always exits 0"));
+assert.ok(!blockedDirect.includes("hosted enforcement returned a deny"));
+
+const blockedForced = renderSummary({
+  ...pushBase,
+  structuralFindings: [
+    { code: "OAP.REPO.FORCE_PUSH", severity: "high", message: "Force push." },
+  ],
+  willFail: true,
+  pushProtection: {
+    enabled: true,
+    applies: true,
+    blocked: true,
+    reason: "forced",
+    classification: "forced",
+    defaultBranch: "main",
+    branch: "main",
+  },
+});
+assert.match(blockedForced, /the push to main was forced\./);
+assert.match(blockedForced, /\| Push classification \| forced \|/);
+
+// A branch name cannot break out of the markdown table or inject a heading.
+const hostileBranch = renderSummary({
+  ...pushBase,
+  structuralFindings: [],
+  willFail: true,
+  pushProtection: {
+    enabled: true,
+    applies: true,
+    blocked: true,
+    reason: "direct",
+    classification: "direct",
+    defaultBranch: "main|x\n## injected",
+    branch: "main|x\n## injected",
+  },
+});
+assert.ok(!hostileBranch.includes("\n## injected"));
+
+// Protection on, merged pull request: report ready, nothing blocked.
+const mergedOk = renderSummary({
+  ...pushBase,
+  structuralFindings: [],
+  willFail: false,
+  pushProtection: {
+    enabled: true,
+    applies: true,
+    blocked: false,
+    reason: "",
+    classification: "merged_pull_request",
+    defaultBranch: "main",
+    branch: "main",
+  },
+});
+assert.match(mergedOk, /\*\*Report ready\.\*\*/);
+assert.match(mergedOk, /\| Push classification \| merged_pull_request \|/);
+
+// Protection off on a push: the old report-only wording stays.
+const pushOff = renderSummary({
+  ...pushBase,
+  structuralFindings: [],
+  willFail: false,
+  pushProtection: {
+    enabled: false,
+    applies: true,
+    blocked: false,
+    reason: "",
+    classification: "direct",
+    defaultBranch: "main",
+    branch: "main",
+  },
+});
+assert.match(pushOff, /\| Default branch protection \| disabled \|/);
+assert.match(pushOff, /always exits 0/);
+
+// Protection on but the push is to another branch.
+const otherBranch = renderSummary({
+  ...pushBase,
+  structuralFindings: [],
+  willFail: false,
+  pushProtection: {
+    enabled: true,
+    applies: false,
+    blocked: false,
+    reason: "",
+    classification: "direct",
+    defaultBranch: "main",
+    branch: "feature/x",
+  },
+});
+assert.match(otherBranch, /\| Default branch protection \| enabled \(not the default branch\) \|/);
+
+// Pull request events do not get push rows.
+const prSummary = renderSummary({
+  ...pushBase,
+  eventName: "pull_request",
+  prNumber: 7,
+  structuralFindings: [],
+  willFail: false,
+  pushProtection: {
+    enabled: true,
+    applies: false,
+    blocked: false,
+    reason: "",
+    classification: "not_push",
+    defaultBranch: "main",
+    branch: "",
+  },
+});
+assert.ok(!prSummary.includes("| Push classification |"));
+assert.ok(!prSummary.includes("| Default branch protection |"));
+
+// Hosted enforcement plus protection mentions both.
+const hostedWithProtection = renderSummary({
+  ...pushBase,
+  configuredMode: "hosted",
+  verification: {
+    mode: "hosted",
+    provenance: "ci_time",
+    decision: { allow: true, outcome: "allow", decision_id: "dec_9" },
+  },
+  structuralFindings: [],
+  willFail: false,
+  pushProtection: {
+    enabled: true,
+    applies: true,
+    blocked: false,
+    reason: "",
+    classification: "merged_pull_request",
+    defaultBranch: "main",
+    branch: "main",
+  },
+});
+assert.match(hostedWithProtection, /Hosted enforcement is enabled\./);
+assert.match(hostedWithProtection, /`protect-default-branch` is also enabled/);
+
+console.log("OK summary.test.js (default branch protection)");

@@ -128,4 +128,113 @@ assert(
   ),
 );
 
+// Default-branch protection in the run log.
+const protectedOutput = captureStdout(() =>
+  emitRunLog({
+    repository: "aporthq/example",
+    prNumber: "",
+    configuredMode: "auto",
+    verification: { mode: "evidence-only" },
+    structuralFindings: [
+      {
+        code: "OAP.REPO.FORCE_PUSH",
+        severity: "high",
+        message: "Force push to the default branch main rewrote branch history.",
+      },
+    ],
+    warnings: [],
+    willFail: true,
+    pushProtection: {
+      enabled: true,
+      applies: true,
+      blocked: true,
+      reason: "forced",
+      classification: "forced",
+      defaultBranch: "main\n::error::injected",
+      branch: "main",
+    },
+  }),
+);
+
+assert(protectedOutput.includes("Push classification: forced"));
+assert(protectedOutput.includes("Default branch protection: enabled"));
+assert(
+  protectedOutput.includes(
+    "::error title=Blocking APort finding%3A OAP.REPO.FORCE_PUSH::Force push to the default branch main rewrote branch history.",
+  ),
+);
+assert(
+  protectedOutput.includes(
+    "::error title=APort Repository Guard blocked this workflow::protect-default-branch is enabled and the push to main%0A::error::injected was forced.",
+  ),
+);
+assert(!protectedOutput.includes("Hosted enforcement failed because"));
+assert(!protectedOutput.includes("\n::error::injected"));
+
+const notPushOutput = captureStdout(() =>
+  emitRunLog({
+    repository: "aporthq/example",
+    prNumber: 3,
+    configuredMode: "auto",
+    verification: { mode: "evidence-only" },
+    structuralFindings: [],
+    warnings: [],
+    willFail: false,
+    pushProtection: {
+      enabled: true,
+      applies: false,
+      blocked: false,
+      classification: "not_push",
+    },
+  }),
+);
+assert(!notPushOutput.includes("Push classification:"));
+assert(!notPushOutput.includes("Default branch protection:"));
+
+const otherBranchOutput = captureStdout(() =>
+  emitRunLog({
+    repository: "aporthq/example",
+    prNumber: "",
+    configuredMode: "auto",
+    verification: { mode: "evidence-only" },
+    structuralFindings: [],
+    warnings: [],
+    willFail: false,
+    pushProtection: {
+      enabled: true,
+      applies: false,
+      blocked: false,
+      classification: "direct",
+    },
+  }),
+);
+assert(otherBranchOutput.includes("Push classification: direct"));
+assert(
+  otherBranchOutput.includes(
+    "Default branch protection: enabled (not the default branch)",
+  ),
+);
+
+// Protection off and the push is elsewhere: "disabled", not
+// "disabled (not the default branch)", matching the job summary.
+const disabledElsewhereOutput = captureStdout(() =>
+  emitRunLog({
+    repository: "aporthq/example",
+    prNumber: "",
+    configuredMode: "auto",
+    verification: { mode: "evidence-only" },
+    structuralFindings: [],
+    warnings: [],
+    willFail: false,
+    pushProtection: {
+      enabled: false,
+      applies: false,
+      blocked: false,
+      classification: "direct",
+    },
+  }),
+);
+assert(disabledElsewhereOutput.includes("Default branch protection: disabled\n"));
+assert(!disabledElsewhereOutput.includes("disabled (not the default branch)"));
+
 console.log("OK logging.test.js");
