@@ -4,6 +4,7 @@ const { normalizeMode, runAportVerification } = require("./aport");
 const { buildVerifyContext } = require("./context");
 const {
   getPullRequestData,
+  getRepositoryDefaultBranch,
   readBaseFile,
   readBasePolicy,
   readEventPayload,
@@ -14,7 +15,15 @@ const {
   repositoryPolicyFindings,
   resolveProtectedPaths,
 } = require("./policy");
+const { branchFromGitRef, isNonBranchRef, isZeroSha } = require("./git-ref");
 const { emitRunLog } = require("./logging");
+const {
+  defaultBranchFromEvent,
+  evaluateDefaultBranchProtection,
+  isDefaultBranchPush,
+  pushedBranch,
+  resolveDefaultBranch,
+} = require("./push-protection");
 const { renderSummary } = require("./summary");
 const { detectStructuralFindings } = require("./structural");
 
@@ -82,6 +91,23 @@ async function main() {
   }
   const managedAgentId = useManagedCredentials ? configuredManagedAgentId : "";
   const apiKey = useManagedCredentials ? configuredApiKey : "";
+  const eventName = process.env.GITHUB_EVENT_NAME || "";
+  const protectDefaultBranch = parseBoolean(
+    process.env.APORT_PROTECT_DEFAULT_BRANCH,
+  );
+  const { defaultBranch, warnings: defaultBranchWarnings } =
+    await resolveDefaultBranch({
+      event,
+      eventName,
+      input: process.env.APORT_DEFAULT_BRANCH,
+      lookup: getRepositoryDefaultBranch,
+    });
+  warnings.push(...defaultBranchWarnings);
+  const defaultBranchPush = isDefaultBranchPush({
+    event,
+    eventName,
+    defaultBranch,
+  });
 
   const {
     files,
@@ -90,8 +116,34 @@ async function main() {
     repositoryAction,
     pushClassification,
     warnings: dataWarnings,
-  } = await getPullRequestData(event);
+  } = await getPullRequestData(event, undefined, {
+    pushLookup: {
+      // Every push to the default branch waits out an empty pulls index,
+      // whether or not the input is on, so the push-classification output
+      // does not depend on the input and a lagging merge is not reported
+      // as direct. The wait is bounded: three attempts, ten seconds apart.
+      retryOnNoMatch: defaultBranchPush,
+      ...pushLookupOverrides(process.env),
+    },
+  });
   warnings.push(...dataWarnings);
+
+  const pushProtection = evaluateDefaultBranchProtection({
+    enabled: protectDefaultBranch,
+    eventName,
+    event,
+    pushClassification,
+    defaultBranch,
+  });
+  warnings.push(...pushProtection.warnings);
+  const verifyPushClassification =
+    pushClassification && eventName === "push" && pushProtection.defaultBranch
+      ? {
+          ...pushClassification,
+          push_to_default_branch: pushProtection.applies,
+          default_branch: pushProtection.defaultBranch,
+        }
+      : pushClassification;
 
   const { policy: basePolicy, warnings: policyWarnings } =
     await readBasePolicy(event);
@@ -120,7 +172,7 @@ async function main() {
     process.env.APORT_BLOCK_PROTECTED_PATHS,
   );
   const policyBranch = resolvePolicyBranch(event, pr);
-  const structuralFindings = [
+  const repositoryFindings = [
     ...detectStructuralFindings({
       files,
       evidenceTruncated,
@@ -139,15 +191,20 @@ async function main() {
     }),
     ...basePolicyReadFindings(basePolicy, policyWarnings),
   ];
+  // The push protection findings stay Action-side (summary, annotations, exit
+  // code). They are not sent as structural findings, so a commit index that
+  // lags a legitimate merge cannot persist a hosted deny for it. The hosted
+  // verifier still gets the push facts as plain evidence fields.
+  const structuralFindings = [...repositoryFindings, ...pushProtection.findings];
   const verifyContext = buildVerifyContext({
     event,
     files,
     attribution,
-    structuralFindings,
+    structuralFindings: hostedStructuralFindings(structuralFindings, pushProtection),
     repositoryPolicy,
     evidenceTruncated,
     repositoryAction,
-    pushClassification,
+    pushClassification: verifyPushClassification,
   });
   const readTrustedPassport = async (passportPath) => {
     const result = await readBaseFile(event, passportPath);
@@ -176,6 +233,7 @@ async function main() {
     configuredMode,
     verification,
     structuralFindings,
+    pushProtection,
   );
   const summary = renderSummary({
     repository: process.env.GITHUB_REPOSITORY || "",
@@ -186,10 +244,11 @@ async function main() {
     repositoryPolicy,
     verification,
     configuredMode,
-    eventName: process.env.GITHUB_EVENT_NAME || "",
+    eventName,
     workflowRef: process.env.GITHUB_WORKFLOW_REF || "",
     warnings,
     willFail,
+    pushProtection,
     // So the claim link points at the deployment that issued the passport,
     // not at production regardless of configuration.
     apiUrl: process.env.APORT_API_URL || "https://api.aport.io",
@@ -202,6 +261,7 @@ async function main() {
   writeOutput("decision-id", verification.decision?.decision_id || "");
   writeOutput("outcome", verification.decision?.outcome || "");
   writeOutput("structural-findings", JSON.stringify(structuralFindings));
+  writeOutput("push-classification", pushProtection.classification);
 
   emitRunLog({
     repository: process.env.GITHUB_REPOSITORY || "",
@@ -211,6 +271,7 @@ async function main() {
     structuralFindings,
     warnings,
     willFail,
+    pushProtection,
   });
 
   if (willFail) {
@@ -218,7 +279,19 @@ async function main() {
   }
 }
 
-function shouldFailWorkflow(mode, verification, structuralFindings = []) {
+/**
+ * Hosted enforcement decides the outcome for every mode that requires it.
+ * Default-branch protection is the one addition that can fail a report-only
+ * run, and it only ever fires for a push to the default branch with
+ * `protect-default-branch` on.
+ */
+function shouldFailWorkflow(
+  mode,
+  verification,
+  structuralFindings = [],
+  pushProtection = null,
+) {
+  if (pushProtection?.blocked === true) return true;
   const requiresHosted =
     normalizeMode(mode) === "hosted" || verification?.requiresHosted === true;
   return (
@@ -260,6 +333,18 @@ function shouldUseManagedCredentials({
   // PR head repository as a no-secret run when its repository differs.
   if (!headRepository || !baseRepository) return true;
   return headRepository === baseRepository;
+}
+
+/**
+ * Test and self-host knob for the pull request lookup retry delay. The
+ * production default (ten seconds between attempts) lives in github.js; this
+ * only exists so an end-to-end run against a local API stand-in does not wait
+ * twenty seconds per direct push.
+ */
+function pushLookupOverrides(env = process.env) {
+  const raw = String(env.APORT_PUSH_LOOKUP_DELAY_MS ?? "").trim();
+  if (!/^\d+$/.test(raw)) return {};
+  return { delayMs: Number(raw) };
 }
 
 function readManagedCredentials(env = process.env) {
@@ -314,13 +399,6 @@ function resolvePolicyBranch(event, pr = {}) {
   );
 }
 
-function branchFromGitRef(ref) {
-  const value = String(ref || "");
-  if (value.startsWith("refs/heads/")) return value.slice("refs/heads/".length);
-  if (!value.startsWith("refs/")) return value;
-  return "";
-}
-
 function isBasePolicyReadFailure(warning) {
   const value = String(warning || "");
   return (
@@ -333,18 +411,79 @@ function isBasePolicyReadFailure(warning) {
   );
 }
 
+/**
+ * The structural findings sent to the hosted verifier: everything except the
+ * default-branch push findings, which are enforced Action-side only.
+ */
+function hostedStructuralFindings(structuralFindings = [], pushProtection = null) {
+  const actionSide = new Set(pushProtection?.findings || []);
+  return structuralFindings.filter((finding) => !actionSide.has(finding));
+}
+
 function handleFatalError(error) {
-  const hosted = fatalRequiresHosted(process.env, readEventPayload());
+  const event = readEventPayload();
+  const hosted = fatalRequiresHosted(process.env, event);
+  const protectedPush = fatalRequiresProtectedPush(process.env, event);
+  const failed = hosted || protectedPush;
+  const outcome = hosted
+    ? "workflow failed because hosted mode was explicitly required."
+    : protectedPush
+      ? "workflow failed because protect-default-branch is enabled and the push could not be classified."
+      : "workflow remains allowed because this mode is report-only.";
   writeSummary(`# APort / OAP code.repository.merge.v1
 
-${hosted ? "Hosted verification could not complete." : "Report-only mode could not complete."}
+${hosted ? "Hosted verification could not complete." : protectedPush ? "Default branch protection could not complete." : "Report-only mode could not complete."}
 
 - Error: ${error.message}
-- Outcome: ${hosted ? "workflow failed because hosted mode was explicitly required." : "workflow remains allowed because this mode is report-only."}
+- Outcome: ${outcome}
 `);
-  if (hosted) {
+  // A push that never got classified is reported as unknown, never as a
+  // missing output a later step could mistake for a pass. Created branches and
+  // non-branch refs can still be classified from the trusted event payload.
+  writeOutput("push-classification", fatalPushClassification(process.env, event));
+  if (failed) {
+    process.stdout.write(
+      `::error title=APort Repository Guard could not complete::${escapeWorkflowCommandValue(error.message)}\n`,
+    );
     process.exitCode = 1;
   }
+}
+
+/**
+ * With protect-default-branch on, a push to the default branch that dies
+ * before API-backed classification must still fail closed unless the trusted
+ * push payload is enough to classify it as exempt. Tag pushes are not branch
+ * pushes, and a newly created branch is explicitly allowed by
+ * evaluateDefaultBranchProtection; a forced push remains protected even if the
+ * payload also carries a zero before SHA. When branch/default evidence is
+ * missing, the push is treated as protected. The API lookup is not attempted
+ * here; the run is already failing.
+ */
+function fatalPushClassification(env = process.env, event = {}) {
+  if (env.GITHUB_EVENT_NAME !== "push") return "not_push";
+  if (isNonBranchRef(String(event?.ref || env.GITHUB_REF || ""))) return "not_push";
+  if (event?.forced !== true && (event?.created === true || isZeroSha(event?.before))) {
+    return "created";
+  }
+  return "unknown";
+}
+
+function fatalRequiresProtectedPush(env = process.env, event = {}) {
+  if (
+    env.GITHUB_EVENT_NAME !== "push" ||
+    !parseBoolean(env.APORT_PROTECT_DEFAULT_BRANCH)
+  ) {
+    return false;
+  }
+  const fatalClassification = fatalPushClassification(env, event);
+  if (fatalClassification === "not_push" || fatalClassification === "created") {
+    return false;
+  }
+  const branch = pushedBranch(event, env);
+  const defaultBranch =
+    defaultBranchFromEvent(event) || String(env.APORT_DEFAULT_BRANCH || "").trim();
+  if (!branch || !defaultBranch) return true;
+  return branch === defaultBranch;
 }
 
 function fatalRequiresHosted(env = process.env, event = {}) {
@@ -372,9 +511,14 @@ if (require.main === module) {
 module.exports = {
   basePolicyReadFindings,
   buildAttributionInput,
+  fatalPushClassification,
   fatalRequiresHosted,
+  fatalRequiresProtectedPush,
+  handleFatalError,
+  hostedStructuralFindings,
   parseBoolean,
   parseList,
+  pushLookupOverrides,
   readManagedCredentials,
   resolvePolicyBranch,
   shouldFailWorkflow,

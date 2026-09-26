@@ -1,4 +1,15 @@
 const assert = require("assert");
+const { branchFromGitRef } = require("../src/git-ref");
+
+// One ref helper for every module: heads are branches, bare names pass
+// through, anything else fully qualified is not a branch.
+assert.equal(branchFromGitRef("refs/heads/main"), "main");
+assert.equal(branchFromGitRef("refs/heads/release/stable"), "release/stable");
+assert.equal(branchFromGitRef("main"), "main");
+assert.equal(branchFromGitRef("refs/tags/main"), "");
+assert.equal(branchFromGitRef("refs/pull/7/merge"), "");
+assert.equal(branchFromGitRef(""), "");
+assert.equal(branchFromGitRef(undefined), "");
 const {
   buildVerifyContext,
   compactStructuralFindingsForVerify,

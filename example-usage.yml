@@ -30,6 +30,44 @@ jobs:
       - uses: aporthq/policy-verify-action@v1
 
 ---
+# Optional: fail the check on a forced or direct push to the default branch.
+# The check runs after the push lands, so pair it with a GitHub ruleset that
+# blocks force pushes and requires a pull request before merging.
+
+name: APort Repository Guard Protect Default Branch
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled, review_requested, review_request_removed]
+  pull_request_review:
+    types: [submitted, dismissed]
+  push:
+    branches:
+      - main
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: read
+
+jobs:
+  aport:
+    name: APort / OAP code.repository.merge.v1
+    if: >-
+      github.event_name != 'pull_request_review' ||
+      github.event.action == 'dismissed' ||
+      github.event.review.state != 'commented'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: aporthq/policy-verify-action@v1
+        id: aport
+        with:
+          protect-default-branch: true
+      - name: Continue only for merged pull requests
+        if: steps.aport.outputs.push-classification == 'merged_pull_request'
+        run: echo "A merged pull request landed on the default branch."
+
+---
 # Optional: customize protected path globs.
 
 name: APort Repository Guard With Custom Paths
