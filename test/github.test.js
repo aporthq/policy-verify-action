@@ -1,7 +1,10 @@
 const assert = require("assert");
 const {
+  assertSafeGitHubApiUrl,
   buildGitHubApiUrl,
+  classifyPushAction,
   getPullRequestData,
+  getRepositoryDefaultBranch,
   readBaseFile,
   readBasePolicy,
 } = require("../src/github");
@@ -245,7 +248,10 @@ async function main() {
   assert.equal(pushData.evidenceTruncated.commits, false);
   assert.equal(pushData.repositoryAction, "repo.push");
   assert.equal(pushData.pushClassification.push_classification, "direct");
-  assert(pushPaths.some((path) => path.includes("/commits/") && path.includes("/pulls?per_page=10")));
+  // per_page is asserted with the page parameter appended, not as a bare
+  // substring: "per_page=10" is a prefix of "per_page=100", so the looser form
+  // passed either way and measured nothing.
+  assert(pushPaths.some((path) => path.includes("/commits/") && path.includes("/pulls?per_page=100&page=1")));
   assert(pushPaths.some((path) => path.includes("/compare/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")));
 
   const mergePushPaths = [];
@@ -270,7 +276,28 @@ async function main() {
               base: {
                 ref: "main",
               },
+              head: { sha: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" },
               merge_commit_sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            },
+          ],
+        };
+      }
+      if (path.includes("/pulls/42/commits")) {
+        // A squash merge: the pull request's own commits never land as-is.
+        return { ok: true, status: 200, data: [{ sha: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" }] };
+      }
+      if (path.includes("/pulls/42/files")) {
+        return {
+          ok: true,
+          status: 200,
+          data: [
+            {
+              filename: "src/merged.js",
+              status: "modified",
+              additions: 2,
+              deletions: 1,
+              changes: 3,
+              patch: "@@ -10,3 +10,4 @@\n context before\n-old\n+new one\n+new two\n context after",
             },
           ],
         };
@@ -280,12 +307,20 @@ async function main() {
         status: 200,
         data: {
           total_commits: 1,
-          commits: [{ sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" }],
+          commits: [
+            {
+              sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              parents: [{ sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }],
+            },
+          ],
           files: [
             {
               filename: "src/merged.js",
+              status: "modified",
               additions: 2,
               deletions: 1,
+              changes: 3,
+              patch: "@@ -10,3 +10,4 @@\n context before\n-old\n+new one\n+new two\n context after",
             },
           ],
         },
@@ -299,6 +334,166 @@ async function main() {
   assert.equal(mergePushData.evidenceTruncated.files, false);
   assert.equal(mergePushData.evidenceTruncated.commits, false);
   assert(mergePushPaths.some((path) => path.includes("/compare/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")));
+  assert(mergePushPaths.some((path) => path.includes("/pulls/42/commits?per_page=100")));
+  assert(mergePushPaths.some((path) => path.includes("/pulls/42/files?per_page=100")));
+  assert.deepEqual(mergePushData.warnings, []);
+
+  const rateLimitedLookupCalls = [];
+  const rateLimitedLookup = await classifyPushAction(
+    {
+      owner: "aporthq",
+      repo: "agent-passport",
+      before: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      after: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      branch: "main",
+      ref: "refs/heads/main",
+    },
+    async (path) => {
+      rateLimitedLookupCalls.push(path);
+      if (rateLimitedLookupCalls.length === 1) {
+        return {
+          ok: false,
+          status: 403,
+          headers: { "x-ratelimit-remaining": "0" },
+          data: [],
+          error: "API rate limit exceeded",
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        data: [
+          {
+            number: 43,
+            state: "closed",
+            merged_at: "2026-09-04T12:00:00Z",
+            base: { ref: "main" },
+            merge_commit_sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          },
+        ],
+      };
+    },
+    { attempts: 2, delayMs: 0, sleep: async () => {} },
+  );
+  assert.equal(rateLimitedLookupCalls.length, 2);
+  assert.equal(rateLimitedLookup.action, "pr.merge");
+  assert.equal(rateLimitedLookup.evidence.push_classification, "merged_pull_request");
+
+  const forbiddenLookupCalls = [];
+  const forbiddenLookup = await classifyPushAction(
+    {
+      owner: "aporthq",
+      repo: "agent-passport",
+      before: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      after: "cccccccccccccccccccccccccccccccccccccccc",
+      branch: "main",
+      ref: "refs/heads/main",
+    },
+    async (path) => {
+      forbiddenLookupCalls.push(path);
+      return { ok: false, status: 403, data: [], error: "Resource not accessible by integration" };
+    },
+    { attempts: 3, delayMs: 0, sleep: async () => {} },
+  );
+  assert.equal(forbiddenLookupCalls.length, 1);
+  assert.equal(forbiddenLookup.action, "repo.push");
+  assert.equal(forbiddenLookup.evidence.push_classification, "unknown");
+  assert.match(forbiddenLookup.warnings[0], /after 1 failed attempt/);
+
+  const pagedMergeCalls = [];
+  const pagedMergeLookup = await classifyPushAction(
+    {
+      owner: "aporthq",
+      repo: "agent-passport",
+      before: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      after: "dddddddddddddddddddddddddddddddddddddddd",
+      branch: "main",
+      ref: "refs/heads/main",
+    },
+    async (path) => {
+      pagedMergeCalls.push(path);
+      const page = new URL(path, "https://api.github.test").searchParams.get("page");
+      if (page === "1") {
+        return {
+          ok: true,
+          status: 200,
+          data: [
+            {
+              number: 44,
+              state: "closed",
+              merged_at: "2026-09-04T12:00:00Z",
+              base: { ref: "main" },
+              merge_commit_sha: "dddddddddddddddddddddddddddddddddddddddd",
+            },
+            ...Array.from({ length: 99 }, (_, index) => ({ number: index + 1000 })),
+          ],
+        };
+      }
+      return { ok: false, status: 503, data: [], error: "page two down" };
+    },
+    { attempts: 3, delayMs: 0, sleep: async () => {} },
+  );
+  assert.equal(pagedMergeCalls.length, 2);
+  assert.equal(pagedMergeLookup.action, "pr.merge");
+  assert.equal(pagedMergeLookup.evidence.push_classification, "merged_pull_request");
+  assert.equal(pagedMergeLookup.evidence.pull_request_number, 44);
+
+  const exactCapCalls = [];
+  const exactCapLookup = await classifyPushAction(
+    {
+      owner: "aporthq",
+      repo: "agent-passport",
+      before: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      after: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      branch: "main",
+      ref: "refs/heads/main",
+    },
+    async (path) => {
+      exactCapCalls.push(path);
+      const page = Number(new URL(path, "https://api.github.test").searchParams.get("page"));
+      return {
+        ok: true,
+        status: 200,
+        data: page <= 5
+          ? Array.from({ length: 100 }, (_, index) => ({ number: (page - 1) * 100 + index + 1 }))
+          : [],
+      };
+    },
+    { attempts: 1, delayMs: 0, sleep: async () => {} },
+  );
+  assert.equal(exactCapCalls.length, 6);
+  assert.equal(exactCapLookup.action, "repo.push");
+  assert.equal(exactCapLookup.evidence.push_classification, "direct");
+  assert.deepEqual(exactCapLookup.warnings, []);
+
+  const overCapCalls = [];
+  const overCapLookup = await classifyPushAction(
+    {
+      owner: "aporthq",
+      repo: "agent-passport",
+      before: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      after: "ffffffffffffffffffffffffffffffffffffffff",
+      branch: "main",
+      ref: "refs/heads/main",
+    },
+    async (path) => {
+      overCapCalls.push(path);
+      const page = Number(new URL(path, "https://api.github.test").searchParams.get("page"));
+      return {
+        ok: true,
+        status: 200,
+        data: page <= 6
+          ? Array.from({ length: 100 }, (_, index) => ({ number: (page - 1) * 100 + index + 1 }))
+          : [],
+      };
+    },
+    { attempts: 1, delayMs: 0, sleep: async () => {} },
+  );
+  assert.equal(overCapCalls.length, 6);
+  assert.equal(overCapLookup.action, "repo.push");
+  assert.equal(overCapLookup.evidence.push_classification, "unknown");
+  assert.equal(overCapLookup.evidence.push_classification_reason, "associated_pr_list_truncated");
+  assert.match(overCapLookup.warnings[0], /more than 500 associated pull requests/);
 
   const pushFallbackPaths = [];
   const pushFallback = await getPullRequestData(
@@ -317,14 +512,7 @@ async function main() {
     },
     async (path) => {
       pushFallbackPaths.push(path);
-      if (path.includes("/commits/") && path.includes("/pulls?")) {
-        return {
-          ok: true,
-          status: 200,
-          data: [],
-        };
-      }
-      throw new Error("compare should not be called for zero before SHA");
+      throw new Error(`no API call is expected for a branch creation, got ${path}`);
     },
   );
 
@@ -335,9 +523,88 @@ async function main() {
   assert.equal(pushFallback.evidenceTruncated.files, true);
   assert.equal(pushFallback.evidenceTruncated.commits, true);
   assert.equal(pushFallback.repositoryAction, "repo.push");
-  assert.equal(pushFallback.pushClassification.push_classification, "direct");
-  assert(pushFallbackPaths.some((path) => path.includes("/commits/") && path.includes("/pulls?per_page=10")));
+  assert.equal(pushFallback.pushClassification.push_classification, "created");
+  assert.equal(pushFallback.pushClassification.push_classification_reason, "branch_created");
+  assert.deepEqual(pushFallbackPaths, []);
   assert(pushFallback.warnings.some((warning) => warning.includes("marking evidence incomplete")));
+
+  // A branch deletion never looks up pull requests or compares.
+  const deletionPaths = [];
+  const deletion = await getPullRequestData(
+    {
+      ref: "refs/heads/feature/x",
+      before: "cccccccccccccccccccccccccccccccccccccccc",
+      after: "0000000000000000000000000000000000000000",
+      deleted: true,
+      commits: [],
+    },
+    async (path) => {
+      deletionPaths.push(path);
+      throw new Error(`no API call is expected for a branch deletion, got ${path}`);
+    },
+  );
+  assert.equal(deletion.pushClassification.push_classification, "direct");
+  assert.equal(deletion.pushClassification.push_classification_reason, "branch_deleted");
+  assert.deepEqual(deletionPaths, []);
+
+  // Cleartext GitHub API URLs: loopback only, unless explicitly allowed.
+  assertSafeGitHubApiUrl(new URL("https://api.github.com/"), {});
+  assertSafeGitHubApiUrl(new URL("http://127.0.0.1:8080/"), {});
+  assertSafeGitHubApiUrl(new URL("http://localhost:8080/"), {});
+  assertSafeGitHubApiUrl(new URL("http://[::1]:8080/"), {});
+  // Credentials and ports do not change the host; a lookalike host is not
+  // loopback; credentials that spell "localhost" still resolve to the real
+  // host. Numeric forms of 127.0.0.1 are normalised by the URL parser.
+  assertSafeGitHubApiUrl(new URL("http://user:pw@localhost:9/"), {});
+  assertSafeGitHubApiUrl(new URL("http://127.1/"), {});
+  assertSafeGitHubApiUrl(new URL("HTTP://LOCALHOST/"), {});
+  for (const url of [
+    "http://localhost.evil.test/",
+    "http://127.0.0.1.evil.test/",
+    "http://localhost:8080@evil.test/",
+    "http://[::ffff:127.0.0.1]/",
+    "http://0.0.0.0/",
+  ]) {
+    assert.throws(() => assertSafeGitHubApiUrl(new URL(url), {}), /plain http/, url);
+  }
+  assert.throws(
+    () => assertSafeGitHubApiUrl(new URL("http://ghe.example/api/v3/"), {}),
+    /Refusing to send the GitHub token over plain http to ghe\.example/,
+  );
+  assert.throws(
+    () => assertSafeGitHubApiUrl(new URL("http://ghe.example/api/v3/"), { APORT_ALLOW_INSECURE_GITHUB_API: "true" }),
+    /plain http/,
+  );
+  assertSafeGitHubApiUrl(new URL("http://ghe.example/api/v3/"), { APORT_ALLOW_INSECURE_GITHUB_API: "1" });
+  assert.throws(
+    () => assertSafeGitHubApiUrl(new URL("ftp://ghe.example/"), {}),
+    /unsupported protocol/,
+  );
+
+  // GET /repos/{owner}/{repo} default branch lookup.
+  process.env.GITHUB_REPOSITORY = "aporthq/agent-passport";
+  const defaultBranchPaths = [];
+  const defaultBranch = await getRepositoryDefaultBranch(async (path) => {
+    defaultBranchPaths.push(path);
+    return { ok: true, status: 200, data: { default_branch: "trunk" } };
+  });
+  assert.deepEqual(defaultBranch, { defaultBranch: "trunk", error: "" });
+  assert.deepEqual(defaultBranchPaths, ["/repos/aporthq/agent-passport"]);
+  const defaultBranchDown = await getRepositoryDefaultBranch(async () => ({
+    ok: false,
+    status: 503,
+    data: [],
+    error: "unavailable",
+  }));
+  assert.equal(defaultBranchDown.defaultBranch, "");
+  assert.match(defaultBranchDown.error, /503/);
+  const defaultBranchMissing = await getRepositoryDefaultBranch(async () => ({
+    ok: true,
+    status: 200,
+    data: {},
+  }));
+  assert.equal(defaultBranchMissing.defaultBranch, "");
+  assert.match(defaultBranchMissing.error, /no default_branch/);
   delete process.env.GITHUB_EVENT_NAME;
 
   process.env.GITHUB_EVENT_NAME = "merge_group";
