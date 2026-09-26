@@ -695,7 +695,32 @@ async function classifyPushAction(
  * with no commit list at all, pull request commits or files could not be fetched)
  * is `unknown`, which enforcing callers treat as direct.
  */
-function patchChangeSignature(patch, status = "") {
+function patchDeltaSignature(patch, status = "") {
+  if (typeof patch !== "string" || patch.trim().length === 0) return null;
+  const changed = [];
+  let hasHunk = false;
+
+  for (const line of patch.split(/\r?\n/)) {
+    if (line.startsWith("@@")) {
+      hasHunk = true;
+      continue;
+    }
+    if (line.startsWith("\\ No newline at end of file")) continue;
+    if (!hasHunk && (line.startsWith("+++") || line.startsWith("---"))) {
+      continue;
+    }
+    if (line.startsWith("+") || line.startsWith("-")) {
+      changed.push(line);
+    }
+  }
+
+  const statusAllowsNoContext = status === "added" || status === "removed";
+  return hasHunk && (changed.length > 0 || statusAllowsNoContext)
+    ? changed.join("\n")
+    : null;
+}
+
+function patchLocationSignature(patch, status = "") {
   if (typeof patch !== "string" || patch.trim().length === 0) return null;
   const normalized = [];
   let hasHunk = false;
@@ -709,7 +734,9 @@ function patchChangeSignature(patch, status = "") {
       continue;
     }
     if (line.startsWith("\\ No newline at end of file")) continue;
-    if (line.startsWith("+++") || line.startsWith("---")) continue;
+    if (!hasHunk && (line.startsWith("+++") || line.startsWith("---"))) {
+      continue;
+    }
     if (line.startsWith("+") || line.startsWith("-")) hasChangedLine = true;
     if (line.startsWith(" ")) hasContextLine = true;
     normalized.push(line);
@@ -726,15 +753,41 @@ function normalizeChangedFile(file) {
     const parsed = Number(value);
     return Number.isFinite(parsed) ? parsed : null;
   };
+  const status = String(file?.status || "");
+  const sha = String(file?.sha || "").toLowerCase();
   return {
+    sha: isSha(sha) ? sha : "",
     filename: String(file?.filename || ""),
     previous_filename: String(file?.previous_filename || ""),
-    status: String(file?.status || ""),
+    status,
     additions: numberOrNull(file?.additions),
     deletions: numberOrNull(file?.deletions),
     changes: numberOrNull(file?.changes),
-    patch_signature: patchChangeSignature(file?.patch, String(file?.status || "")),
+    patch_delta_signature: patchDeltaSignature(file?.patch, status),
+    patch_location_signature: patchLocationSignature(file?.patch, status),
   };
+}
+
+function comparableChangedFile(file, evidenceKind) {
+  const baseEvidence = {
+    filename: file.filename,
+    previous_filename: file.previous_filename,
+    status: file.status,
+    additions: file.additions,
+    deletions: file.deletions,
+    changes: file.changes,
+  };
+  if (evidenceKind === "patch_delta") {
+    return { ...baseEvidence, patch_delta_signature: file.patch_delta_signature };
+  }
+  if (evidenceKind === "patch_location") {
+    return {
+      ...baseEvidence,
+      patch_delta_signature: file.patch_delta_signature,
+      patch_location_signature: file.patch_location_signature,
+    };
+  }
+  return { ...baseEvidence, sha: file.sha };
 }
 
 function changedFileKey(file) {
@@ -768,10 +821,43 @@ function comparePullRequestFileEvidence(pushFiles, pullRequestFiles) {
     if (!prFile) {
       return { ok: false, reason: "pull_request_file_evidence_mismatch" };
     }
-    if (!pushedFile.patch_signature || !prFile.patch_signature) {
+    const hasPatchDeltaEvidence =
+      pushedFile.patch_delta_signature !== null &&
+      prFile.patch_delta_signature !== null;
+    const hasBlobShaEvidence = Boolean(pushedFile.sha && prFile.sha);
+    if (!hasPatchDeltaEvidence && !hasBlobShaEvidence) {
       return { ok: false, reason: "pull_request_file_patch_unavailable" };
     }
-    if (JSON.stringify(pushedFile) !== JSON.stringify(prFile)) {
+    if (hasPatchDeltaEvidence) {
+      if (
+        JSON.stringify(comparableChangedFile(pushedFile, "patch_delta")) !==
+        JSON.stringify(comparableChangedFile(prFile, "patch_delta"))
+      ) {
+        return { ok: false, reason: "pull_request_file_evidence_mismatch" };
+      }
+      if (
+        !pushedFile.patch_location_signature ||
+        !prFile.patch_location_signature
+      ) {
+        return { ok: false, reason: "pull_request_file_location_ambiguous" };
+      }
+      if (
+        JSON.stringify(comparableChangedFile(pushedFile, "patch_location")) !==
+        JSON.stringify(comparableChangedFile(prFile, "patch_location"))
+      ) {
+        return { ok: false, reason: "pull_request_file_location_ambiguous" };
+      }
+      if (hasBlobShaEvidence && pushedFile.sha !== prFile.sha) {
+        // PR-file and compare-file patches are relative to different bases.
+        // Matching coordinates cannot safely override blob drift.
+        return { ok: false, reason: "pull_request_file_location_ambiguous" };
+      }
+      continue;
+    }
+    if (
+      JSON.stringify(comparableChangedFile(pushedFile, "sha")) !==
+      JSON.stringify(comparableChangedFile(prFile, "sha"))
+    ) {
       return { ok: false, reason: "pull_request_file_evidence_mismatch" };
     }
   }
@@ -915,11 +1001,12 @@ async function reconcileMergedPullRequest(
     if (
       fileEvidence.reason === "push_files_unavailable" ||
       fileEvidence.reason === "pull_request_files_unavailable" ||
-      fileEvidence.reason === "pull_request_file_patch_unavailable"
+      fileEvidence.reason === "pull_request_file_patch_unavailable" ||
+      fileEvidence.reason === "pull_request_file_location_ambiguous"
     ) {
       return unknown(
         fileEvidence.reason,
-        `The file evidence for pull request #${number} was empty or missing patch hunks, so it could not be checked against the pushed files; treating push as direct.`,
+        `The file evidence for pull request #${number} was empty, missing patch hunks, or ambiguous about the changed location, so it could not be checked against the pushed files; treating push as direct.`,
       );
     }
     return direct(

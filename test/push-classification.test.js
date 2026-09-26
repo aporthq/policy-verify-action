@@ -446,6 +446,97 @@ async function reconciliationTests() {
     "merged_pull_request",
   );
 
+  // Blob drift is ambiguous even when the patch text and hunk coordinates
+  // match. The PR patch and push patch are relative to different bases, so
+  // coordinates are not proof that the same reviewed block landed.
+  const samePatchDifferentSha = await pushWith({
+    compare: compareOf(
+      [commit(P1, BEFORE), commit(HEAD, P1), commit(AFTER, BEFORE, HEAD)],
+      3,
+      [
+        file("src/a.js", {
+          sha: "2222222222222222222222222222222222222222",
+          patch: "@@ -4,1 +4,1 @@\n context before\n-old\n+new\n context after",
+        }),
+      ],
+    ),
+    prCommits: prCommitsOf(P1, HEAD),
+    prFiles: prFilesOf(
+      file("src/a.js", {
+        sha: "1111111111111111111111111111111111111111",
+        patch: "@@ -4,1 +4,1 @@\n context before\n-old\n+new\n context after",
+      }),
+    ),
+  });
+  assert.equal(
+    samePatchDifferentSha.data.pushClassification.push_classification,
+    "unknown",
+  );
+  assert.equal(
+    samePatchDifferentSha.data.pushClassification.push_classification_reason,
+    "pull_request_file_location_ambiguous",
+  );
+
+  // Base advancement can move hunk line numbers, so absolute hunk coordinates
+  // are not identity. The context around the changed lines is still location
+  // evidence; if it differs, the edit could be a repeated-line forgery and the
+  // safe answer is unknown rather than merged_pull_request.
+  const shiftedContextWithSameSha = await pushWith({
+    compare: compareOf(
+      [commit(P1, BEFORE), commit(HEAD, P1), commit(AFTER, BEFORE, HEAD)],
+      3,
+      [
+        file("src/a.js", {
+          sha: "1111111111111111111111111111111111111111",
+          patch: "@@ -40,1 +40,1 @@\n new base context\n-old\n+new\n new base tail",
+        }),
+      ],
+    ),
+    prCommits: prCommitsOf(P1, HEAD),
+    prFiles: prFilesOf(
+      file("src/a.js", {
+        sha: "1111111111111111111111111111111111111111",
+        patch: "@@ -4,1 +4,1 @@\n pull request base\n-old\n+new\n pull request tail",
+      }),
+    ),
+  });
+  assert.equal(
+    shiftedContextWithSameSha.data.pushClassification.push_classification,
+    "unknown",
+  );
+  assert.equal(
+    shiftedContextWithSameSha.data.pushClassification.push_classification_reason,
+    "pull_request_file_location_ambiguous",
+  );
+
+  const shiftedContextWithDifferentSha = await pushWith({
+    compare: compareOf(
+      [commit(P1, BEFORE), commit(HEAD, P1), commit(AFTER, BEFORE, HEAD)],
+      3,
+      [
+        file("src/a.js", {
+          sha: "2222222222222222222222222222222222222222",
+          patch: "@@ -40,1 +40,1 @@\n new base context\n-old\n+new\n new base tail",
+        }),
+      ],
+    ),
+    prCommits: prCommitsOf(P1, HEAD),
+    prFiles: prFilesOf(
+      file("src/a.js", {
+        sha: "1111111111111111111111111111111111111111",
+        patch: "@@ -4,1 +4,1 @@\n pull request base\n-old\n+new\n pull request tail",
+      }),
+    ),
+  });
+  assert.equal(
+    shiftedContextWithDifferentSha.data.pushClassification.push_classification,
+    "unknown",
+  );
+  assert.equal(
+    shiftedContextWithDifferentSha.data.pushClassification.push_classification_reason,
+    "pull_request_file_location_ambiguous",
+  );
+
   // If same-path content differs, the normalized patch signature still
   // fails closed even though absolute hunk line numbers are ignored.
   const contentMismatch = await pushWith({
@@ -465,7 +556,35 @@ async function reconciliationTests() {
     "pull_request_file_evidence_mismatch",
   );
 
-  const locationMismatch = await pushWith({
+  const diffHeaderContentMismatch = await pushWith({
+    compare: compareOf(
+      [commit(P1, BEFORE), commit(HEAD, P1), commit(AFTER, BEFORE, HEAD)],
+      3,
+      [
+        file("src/a.js", {
+          patch:
+            "@@ -40,2 +40,2 @@\n context before\n-old\n+new\n---literal old\n+++literal landed\n context after",
+        }),
+      ],
+    ),
+    prCommits: prCommitsOf(P1, HEAD),
+    prFiles: prFilesOf(
+      file("src/a.js", {
+        patch:
+          "@@ -4,2 +4,2 @@\n context before\n-old\n+new\n---literal old\n+++literal approved\n context after",
+      }),
+    ),
+  });
+  assert.equal(
+    diffHeaderContentMismatch.data.pushClassification.push_classification,
+    "direct",
+  );
+  assert.equal(
+    diffHeaderContentMismatch.data.pushClassification.push_classification_reason,
+    "pull_request_file_evidence_mismatch",
+  );
+
+  const contextOnlyMismatch = await pushWith({
     compare: compareOf(
       [commit(P1, BEFORE), commit(HEAD, P1), commit(AFTER, BEFORE, HEAD)],
       3,
@@ -476,10 +595,13 @@ async function reconciliationTests() {
       file("src/a.js", { patch: "@@ -4,1 +4,1 @@\n second occurrence\n-old\n+new\n second tail" }),
     ),
   });
-  assert.equal(locationMismatch.data.pushClassification.push_classification, "direct");
   assert.equal(
-    locationMismatch.data.pushClassification.push_classification_reason,
-    "pull_request_file_evidence_mismatch",
+    contextOnlyMismatch.data.pushClassification.push_classification,
+    "unknown",
+  );
+  assert.equal(
+    contextOnlyMismatch.data.pushClassification.push_classification_reason,
+    "pull_request_file_location_ambiguous",
   );
 
   const missingPatch = await pushWith({
@@ -497,6 +619,52 @@ async function reconciliationTests() {
     "pull_request_file_patch_unavailable",
   );
 
+  const noPatchSameSha = await pushWith({
+    compare: compareOf(
+      [commit(P1, BEFORE), commit(HEAD, P1), commit(AFTER, BEFORE, HEAD)],
+      3,
+      [
+        file("src/a.bin", {
+          sha: "1111111111111111111111111111111111111111",
+          patch: undefined,
+        }),
+      ],
+    ),
+    prCommits: prCommitsOf(P1, HEAD),
+    prFiles: prFilesOf(
+      file("src/a.bin", {
+        sha: "1111111111111111111111111111111111111111",
+        patch: undefined,
+      }),
+    ),
+  });
+  assert.equal(noPatchSameSha.data.pushClassification.push_classification, "merged_pull_request");
+
+  const noPatchDifferentSha = await pushWith({
+    compare: compareOf(
+      [commit(P1, BEFORE), commit(HEAD, P1), commit(AFTER, BEFORE, HEAD)],
+      3,
+      [
+        file("src/a.bin", {
+          sha: "2222222222222222222222222222222222222222",
+          patch: undefined,
+        }),
+      ],
+    ),
+    prCommits: prCommitsOf(P1, HEAD),
+    prFiles: prFilesOf(
+      file("src/a.bin", {
+        sha: "1111111111111111111111111111111111111111",
+        patch: undefined,
+      }),
+    ),
+  });
+  assert.equal(noPatchDifferentSha.data.pushClassification.push_classification, "direct");
+  assert.equal(
+    noPatchDifferentSha.data.pushClassification.push_classification_reason,
+    "pull_request_file_evidence_mismatch",
+  );
+
   const contextlessModifiedPatch = await pushWith({
     compare: compareOf(
       [commit(P1, BEFORE), commit(HEAD, P1), commit(AFTER, BEFORE, HEAD)],
@@ -512,7 +680,7 @@ async function reconciliationTests() {
   );
   assert.equal(
     contextlessModifiedPatch.data.pushClassification.push_classification_reason,
-    "pull_request_file_patch_unavailable",
+    "pull_request_file_location_ambiguous",
   );
 
   const prFilesDown = await pushWith({
