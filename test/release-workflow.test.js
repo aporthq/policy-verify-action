@@ -4,7 +4,8 @@ const fs = require("fs");
 const path = require("path");
 
 const workflowPath = path.join(
-  process.cwd(),
+  __dirname,
+  "..",
   ".github",
   "workflows",
   "release.yml",
