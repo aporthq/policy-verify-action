@@ -32,6 +32,15 @@ const {scanGitIntegrity}=require('../src/git-integrity');
     });
     assert.equal(cli.status,1,'CLI must fail despite evidence-only mode or approval labels');
     assert(JSON.parse(cli.stdout).findings.length>0,'CLI must report the detected historical injection');
+    const afterGate=path.join(dir,'AFTER_GATE_MUST_NOT_RUN');
+    const gated=spawnSync('/bin/bash',['-e','-c',
+      '"$TEST_NODE" "$TEST_SCANNER"\n"$TEST_NODE" -e \'require("node:fs").writeFileSync(process.env.TEST_SENTINEL,"ran")\''],{
+      env:{...process.env,APORT_SCAN_REPOSITORY:dir,APORT_SCAN_HEAD:cleanTip,APORT_SCAN_BASE:base,
+        TEST_NODE:process.execPath,TEST_SCANNER:path.join(__dirname,'../src/git-integrity.js'),TEST_SENTINEL:afterGate},
+      encoding:'utf8',
+    });
+    assert.equal(gated.status,1,'a failing integrity command must stop the execution chain');
+    assert(!fs.existsSync(afterGate),'a post-gate install/test sentinel must never run on rejected history');
     await assert.rejects(scanGitIntegrity({repository:dir,head:'--all'}),/exact head SHA/);
     await assert.rejects(scanGitIntegrity({repository:dir,head:cleanTip,base:'a'.repeat(40)}));
     fs.writeFileSync(path.join(dir,'postcss.config.js'),'module.exports={name:"'+'x'.repeat(1200)+'"};\n');
