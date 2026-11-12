@@ -19,7 +19,7 @@ function indexOfRequired(value, description) {
 }
 
 const integrityIndex=indexOfRequired(
-  'uses: aporthq/policy-verify-action/integrity@9e41e4d832521828f86f5ce2d2c7027bb44c3471',
+  'uses: aporthq/policy-verify-action/integrity@37dd76eca6695c504eb1a53d1e0a5d4fda16dfb2',
   'immutable integrity scan',
 );
 assert(integrityIndex < indexOfRequired('run: npm test','candidate test command'),
@@ -28,7 +28,7 @@ assert(workflow.includes('head: ${{ steps.integrity-revision.outputs.sha }}'));
 assert(!workflow.includes('continue-on-error:'),'release integrity cannot be bypassed');
 const monitor=fs.readFileSync(path.join(__dirname,'..','.github/workflows/repository-integrity.yml'),'utf8');
 assert(monitor.includes("branches: ['**']")&&monitor.includes("tags: ['**']"),'monitor all branch and tag pushes');
-assert(monitor.includes('policy-verify-action/integrity@9e41e4d832521828f86f5ce2d2c7027bb44c3471'));
+assert(monitor.includes('policy-verify-action/integrity@37dd76eca6695c504eb1a53d1e0a5d4fda16dfb2'));
 
 function extractReleaseScript() {
   const stepIndex = workflow.indexOf("- name: Create next patch release");
