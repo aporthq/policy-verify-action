@@ -41,6 +41,13 @@ const {scanGitIntegrity}=require('../src/git-integrity');
     });
     assert.equal(gated.status,1,'a failing integrity command must stop the execution chain');
     assert(!fs.existsSync(afterGate),'a post-gate install/test sentinel must never run on rejected history');
+    fs.writeFileSync(source,'const visible=1;/*\0*/'+' '.repeat(2000)+'require("fs").writeFileSync('+JSON.stringify(sentinel)+',"executed");\n');
+    git('add','.');git('commit','-m','NUL-bearing inert source fixture');
+    const nulBearing=await scanGitIntegrity({repository:dir,head:git('rev-parse','HEAD'),base:cleanTip});
+    assert.equal(nulBearing.binary,1,'fixture must reach the NUL-bearing blob path');
+    assert(nulBearing.findings.some(f=>f.rule==='padded-appended-code'),
+      'a NUL in a JavaScript comment must not skip concealed source scanning');
+    fs.writeFileSync(source,'const visible=1;\n');
     await assert.rejects(scanGitIntegrity({repository:dir,head:'--all'}),/exact head SHA/);
     await assert.rejects(scanGitIntegrity({repository:dir,head:cleanTip,base:'a'.repeat(40)}));
     fs.writeFileSync(path.join(dir,'postcss.config.js'),'module.exports={name:"'+'x'.repeat(1200)+'"};\n');

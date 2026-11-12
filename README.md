@@ -23,7 +23,8 @@ Configure a required check separately: installing YAML alone does not enforce
 branch protection, and a post-push check cannot prevent the initial push.
 
 This detects concealed loader patterns, not arbitrary malware. Reports count
-binary blobs but do not analyze their executable behavior. Submodule commits
+binary blobs and inspect their raw content for the same textual loader patterns;
+this does not analyze compiled or compressed executable behavior. Submodule commits
 are reported, not fetched or recursively certified. Content exceeding the scan
 budget fails rather than returning a successful partial verdict. A trusted
 exact-content exception covers historical detector comments, not a directory

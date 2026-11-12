@@ -87,16 +87,17 @@ async function scanGitIntegrity({ repository, head, base = '' }) {
         if(buffer[pending.size]!==10)throw new Error('Malformed object framing');
         const body=buffer.subarray(0,pending.size);
         if(body.includes(0))result.binary++;
-        else {
-          result.text++;
-          const digest=createHash('sha256').update(body).digest('hex');
-          if(REVIEWED_BLOBS.get(pending.oid)===digest)result.reviewed++;
-          else for(const match of (headPaths.get(pending.oid)||[]).some(file=>
-            isSuspiciousContentPath(file)&&isStrictContentPath(file))
-            ? findSuspiciousContentMatches(body.toString('utf8'))
-            : findIntegrityContentMatches(body.toString('utf8'))) {
-            result.findings.push({blob:pending.oid,rule:match.code,line:body.toString('utf8').slice(0,match.index).split('\n').length});
-          }
+        else result.text++;
+        // A NUL is valid inside some source comments/strings. It must not turn
+        // an executable source blob into an uninspected binary exemption.
+        const text=body.toString('utf8');
+        const digest=createHash('sha256').update(body).digest('hex');
+        if(REVIEWED_BLOBS.get(pending.oid)===digest)result.reviewed++;
+        else for(const match of (headPaths.get(pending.oid)||[]).some(file=>
+          isSuspiciousContentPath(file)&&isStrictContentPath(file))
+          ? findSuspiciousContentMatches(text)
+          : findIntegrityContentMatches(text)) {
+          result.findings.push({blob:pending.oid,rule:match.code,line:text.slice(0,match.index).split('\n').length});
         }
         buffer=buffer.subarray(pending.size+1);pending=null;index++;
       }
