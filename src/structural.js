@@ -57,6 +57,11 @@ const DEFAULT_SUSPICIOUS_CONTENT_PATHS = [
   "policies/**",
 ];
 const DOCUMENTATION_EXTENSIONS = new Set([".md", ".mdx", ".txt"]);
+const EXECUTION_SOURCE_RE = /\.(?:[cm]?[jt]sx?|py|sh|bash|zsh|ps1|rb|php|vue|svelte|html?|svg)$/i;
+const INTEGRITY_PATTERN_CODES = new Set([
+  "observed-campaign-marker",
+  "padded-appended-code",
+]);
 const SUSPICIOUS_CONTENT_EVIDENCE_OPTIONAL_PATHS = [
   "**/pnpm-lock.yaml",
   "**/package-lock.json",
@@ -209,6 +214,10 @@ function isWorkflow(path) {
 
 function isSuspiciousContentPath(path, additionalPaths = []) {
   if (isDocumentationPath(path)) return false;
+  return EXECUTION_SOURCE_RE.test(path) || isStrictContentPath(path, additionalPaths);
+}
+
+function isStrictContentPath(path, additionalPaths = []) {
   return (
     matchesAny(DEFAULT_SUSPICIOUS_CONTENT_PATHS, path) ||
     matchesAny(additionalPaths, path)
@@ -1342,7 +1351,12 @@ function detectSuspiciousContentFindings(
       continue;
     }
 
-    const patternCodes = findSuspiciousContentMatches(sourceEvidence.source).map(
+    // Source bundles can legitimately have long lines. Keep the config-specific
+    // heuristics scoped, while detecting concealed loaders in every source path.
+    const matches = suspiciousPaths.some(path => isStrictContentPath(path, additionalSuspiciousPaths))
+      ? findSuspiciousContentMatches(sourceEvidence.source)
+      : findIntegrityContentMatches(sourceEvidence.source);
+    const patternCodes = matches.map(
       (match) => match.code,
     );
     if (!patternCodes.length) continue;
@@ -1351,7 +1365,7 @@ function detectSuspiciousContentFindings(
       code: "OAP.REPO.SUSPICIOUS_OBFUSCATION",
       severity: "high",
       message:
-        "Suspicious obfuscated or remote-execution code was introduced in a protected repository surface.",
+        "Suspicious obfuscated or remote-execution code was introduced in repository source or configuration.",
       paths: suspiciousPaths,
       patterns: patternCodes,
     });
@@ -1411,6 +1425,19 @@ function findSuspiciousContentMatches(source) {
     }
   }
 
+  return matches;
+}
+
+// Shared by source/diff checks and the inert Git-history scanner. This is a
+// concealed-loader detector, not a claim to detect arbitrary malware.
+function findIntegrityContentMatches(source) {
+  const matches = [];
+  for (const pattern of SUSPICIOUS_PATTERNS) {
+    if (!INTEGRITY_PATTERN_CODES.has(pattern.code)) continue;
+    pattern.regex.lastIndex = 0;
+    const match = pattern.regex.exec(String(source || ""));
+    if (match) matches.push({ code: pattern.code, index: match.index });
+  }
   return matches;
 }
 
@@ -1512,6 +1539,7 @@ function flowStyleActionRefs(source) {
 
 module.exports = {
   isSuspiciousContentPath,
+  isStrictContentPath,
   // Exported for tests: the executable-position scan is the security boundary.
   workflowExecutableUses,
   DEFAULT_CONTROL_PLANE_PATHS,
@@ -1520,6 +1548,7 @@ module.exports = {
   detectSuspiciousContentFindings,
   detectStructuralFindings,
   findSuspiciousContentMatches,
+  findIntegrityContentMatches,
   findUnpinnedActions,
   introducesOidcWritePermission,
   introducesWritePermissions,

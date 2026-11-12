@@ -1,0 +1,24 @@
+name: APort Repository Integrity
+description: Detect concealed loaders in Git objects without executing candidate code
+inputs:
+  head:
+    description: Exact candidate commit SHA
+    required: true
+  base:
+    description: Previously trusted commit SHA; omit for complete ancestry scanning
+    required: false
+    default: ""
+  repository-path:
+    description: Full-history local repository to inspect as data
+    required: false
+    default: "."
+runs:
+  using: composite
+  steps:
+    - name: Inspect candidate Git objects
+      shell: bash
+      env:
+        APORT_SCAN_REPOSITORY: ${{ inputs.repository-path }}
+        APORT_SCAN_HEAD: ${{ inputs.head }}
+        APORT_SCAN_BASE: ${{ inputs.base }}
+      run: node "$GITHUB_ACTION_PATH/../src/git-integrity.js"

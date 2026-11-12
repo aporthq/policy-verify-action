@@ -1,5 +1,38 @@
 # APort Repository Guard
 
+## Repository integrity
+
+Source and test files are checked for concealed loaders without adding them to
+`protected-paths`. The stricter configuration-file line-length rule is not
+applied to ordinary generated source solely because a line is long.
+
+The `integrity` sub-action additionally reads Git objects, including intermediate
+commits where injected content was later removed. It imports no candidate code
+and needs no npm install or hosted verifier. Use a reviewed full commit SHA for
+the action, not a mutable tag or the candidate's own scanner. Check out the exact
+candidate with full history, disabled submodules and `persist-credentials: false`.
+Then invoke `aporthq/policy-verify-action/integrity@<reviewed-full-commit-sha>` with
+`head` set to that exact commit and optional `base` set to a previously verified
+commit. Omitting `base` scans the complete head ancestry. The complete head tree
+is inspected in either mode. Configuration blobs keep their strict classification
+from historical paths, including deleted paths and aliases before a rename.
+
+Run this step before dependency installation, builds, tests and publishing.
+Do not use `continue-on-error`, approval-label overrides or an evidence-only
+fallback for integrity failures. A finding or incomplete scan exits nonzero.
+Configure a required check separately: installing YAML alone does not enforce
+branch protection, and a post-push check cannot prevent the initial push.
+
+This detects concealed loader patterns, not arbitrary malware. Reports count
+binary blobs and inspect their raw content for the same textual loader patterns;
+this does not analyze compiled or compressed executable behavior. Submodule commits
+are reported, not fetched or recursively certified. Content exceeding the scan
+budget fails rather than returning a successful partial verdict. Two trusted
+exact-content exceptions cover historical detector comments and a sanitized
+PR-review JSON fixture, not directories or caller-provided allowlists.
+Artifact scanning and credential investigation
+remain separate controls.
+
 APort AI agent passport guardrails for GitHub: hosted OAP decisions, PR attribution, and protected-path checks.
 
 No config, no daemon, no account, and no API key by default. Teams that want decisions persisted under their own APort org can pass a managed hosted passport ID and an APort API key.
