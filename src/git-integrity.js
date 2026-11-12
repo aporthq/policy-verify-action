@@ -3,10 +3,12 @@ const { createHash } = require('node:crypto');
 const { findIntegrityContentMatches, findSuspiciousContentMatches,
   isStrictContentPath, isSuspiciousContentPath } = require('./structural');
 
-// Exact historical detector source, reviewed as comments quoting an indicator.
+// Exact reviewed historical content, never candidate-controlled exemptions.
 // Neither a path exemption nor candidate-controlled configuration may skip code.
 const REVIEWED_BLOBS = new Map([
   ['af89bbed79777440bd48b2991cfb89e2d333c8c3', '3f2f9cd47589cf086c765daf0a45b56906235caf14bfd4fcbc8ef7158bdaf0d3'],
+  // Sanitized PR-review JSON fixture with one long serialized comment string.
+  ['c350d1669c024e68a6e56003afa1f9fd2f54b342', '82c80c4cafefdbfb8358559dfae4ec15a0d8fc08493f9b667c577aaf63452d41'],
 ]);
 const GIT_OPTIONS = ['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false',
   '-c', 'maintenance.auto=false', '-c', 'gc.auto=0', '-c', 'submodule.recurse=false'];
@@ -36,19 +38,37 @@ async function scanGitIntegrity({ repository, head, base = '' }) {
   const ids = new Set(git(['rev-list','--objects',head,...(base?['^'+base]:[])])
     .split('\n').filter(Boolean).map(line=>line.split(' ')[0]));
   const submodules = [];
-  const headPaths = new Map();
+  const strictBlobs = new Set();
+  const recordPath = (oid, file) => {
+    if (isSuspiciousContentPath(file) && isStrictContentPath(file)) strictBlobs.add(oid);
+  };
   // Always inspect the full resulting tree, including reused existing blobs.
   for (const entry of git(['ls-tree','-r','-z',head]).split('\0').filter(Boolean)) {
     const match = /^(\d+) (\w+) ([a-f0-9]{40})\t/.exec(entry);
     if (!match) throw new Error('Malformed tree entry');
     if (match[2] === 'blob') {
       ids.add(match[3]);
-      if (!headPaths.has(match[3])) headPaths.set(match[3], []);
-      headPaths.get(match[3]).push(entry.slice(match[0].length));
+      recordPath(match[3], entry.slice(match[0].length));
     }
     if (match[1] === '160000') submodules.push({commit:match[3],path:entry.slice(match[0].length)});
   }
   if (ids.size > 200000) throw new Error('Object budget exceeded; no successful verdict');
+  // HEAD alone loses deleted/renamed config paths. Classify both sides of every
+  // historical change; -m includes merge parents and -z preserves unusual names.
+  // Rename detection is off so each record always has exactly one path.
+  const history = git(['log','--format=','--raw','-z','--no-abbrev','--no-renames',
+    '--no-ext-diff','--no-textconv','--no-show-signature','--root','-m',
+    head,...(base?['^'+base]:[]),'--']).split('\0');
+  for (let i = 0; i < history.length;) {
+    const header = history[i++].trim();
+    if (!header) continue;
+    const change = /^:[0-7]{6} [0-7]{6} ([a-f0-9]{40}) ([a-f0-9]{40}) [AMDTUXB]$/.exec(header);
+    const file = history[i++];
+    if (!change || !file) throw new Error('Malformed historical path evidence');
+    for (const oid of [change[1], change[2]]) {
+      if (ids.has(oid)) recordPath(oid, file);
+    }
+  }
   const metadata=git(['cat-file','--batch-check=%(objectname) %(objecttype) %(objectsize)'],[...ids].join('\n')+'\n')
     .trim().split('\n').filter(Boolean).map(line=>{
       const [oid,type,size]=line.split(' ');
@@ -93,8 +113,7 @@ async function scanGitIntegrity({ repository, head, base = '' }) {
         const text=body.toString('utf8');
         const digest=createHash('sha256').update(body).digest('hex');
         if(REVIEWED_BLOBS.get(pending.oid)===digest)result.reviewed++;
-        else for(const match of (headPaths.get(pending.oid)||[]).some(file=>
-          isSuspiciousContentPath(file)&&isStrictContentPath(file))
+        else for(const match of strictBlobs.has(pending.oid)
           ? findSuspiciousContentMatches(text)
           : findIntegrityContentMatches(text)) {
           result.findings.push({blob:pending.oid,rule:match.code,line:text.slice(0,match.index).split('\n').length});

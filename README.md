@@ -14,7 +14,8 @@ candidate with full history, disabled submodules and `persist-credentials: false
 Then invoke `aporthq/policy-verify-action/integrity@<reviewed-full-commit-sha>` with
 `head` set to that exact commit and optional `base` set to a previously verified
 commit. Omitting `base` scans the complete head ancestry. The complete head tree
-is inspected in either mode.
+is inspected in either mode. Configuration blobs keep their strict classification
+from historical paths, including deleted paths and aliases before a rename.
 
 Run this step before dependency installation, builds, tests and publishing.
 Do not use `continue-on-error`, approval-label overrides or an evidence-only
@@ -26,9 +27,10 @@ This detects concealed loader patterns, not arbitrary malware. Reports count
 binary blobs and inspect their raw content for the same textual loader patterns;
 this does not analyze compiled or compressed executable behavior. Submodule commits
 are reported, not fetched or recursively certified. Content exceeding the scan
-budget fails rather than returning a successful partial verdict. A trusted
-exact-content exception covers historical detector comments, not a directory
-or a caller-provided allowlist. Artifact scanning and credential investigation
+budget fails rather than returning a successful partial verdict. Two trusted
+exact-content exceptions cover historical detector comments and a sanitized
+PR-review JSON fixture, not directories or caller-provided allowlists.
+Artifact scanning and credential investigation
 remain separate controls.
 
 APort AI agent passport guardrails for GitHub: hosted OAP decisions, PR attribution, and protected-path checks.

@@ -55,6 +55,32 @@ const {scanGitIntegrity}=require('../src/git-integrity');
     const strict=await scanGitIntegrity({repository:dir,head:git('rev-parse','HEAD'),base:cleanTip});
     assert(strict.findings.some(f=>f.rule==='oversized-source-line'),
       'trusted Git scan must preserve existing strict configuration checks');
+    const historicalConfig=path.join(dir,'postcss.config.fixture.js');
+    // Inert comment; assemble the indicator so the test source is not one.
+    fs.writeFileSync(historicalConfig,['// fixture: ', 'eval', '(', 'atob', '("Zml4dHVyZQ=="))\n'].join(''));
+    git('add','.');git('commit','-m','historical configuration classification fixture');
+    const configHead=git('rev-parse','HEAD');
+    const configBlob=git('rev-parse','HEAD:postcss.config.fixture.js');
+    const hasConfigFinding=result=>result.findings.some(f=>f.blob===configBlob&&f.rule==='eval-base64-decoder');
+    assert(hasConfigFinding(await scanGitIntegrity({repository:dir,head:configHead})),
+      'fixture must reach the strict configuration detector before deletion');
+    fs.unlinkSync(historicalConfig);
+    git('add','.');git('commit','-m','delete historical configuration fixture');
+    const deletedConfig=git('rev-parse','HEAD');
+    assert(hasConfigFinding(await scanGitIntegrity({repository:dir,head:deletedConfig})),
+      'deleted configuration must keep its strict history classification');
+    assert(hasConfigFinding(await scanGitIntegrity({repository:dir,head:deletedConfig,base:cleanTip})),
+      'introduced history must keep deleted configuration classification');
+    git('checkout','-b','renamed-config',configHead);
+    git('mv','postcss.config.fixture.js','tests/renamed-config.js');
+    git('commit','-m','rename configuration to an ordinary source path');
+    assert(hasConfigFinding(await scanGitIntegrity({repository:dir,head:git('rev-parse','HEAD')})),
+      'renamed configuration must retain strict classification through its old alias');
+    // A newline in a path must not split or hide a raw Git history entry.
+    git('mv','tests/renamed-config.js','tests/renamed\nconfig.js');
+    git('commit','-m','rename fixture with a newline');
+    assert(hasConfigFinding(await scanGitIntegrity({repository:dir,head:git('rev-parse','HEAD'),base:cleanTip})),
+      'NUL-delimited history parsing must preserve configuration aliases');
     fs.writeFileSync(path.join(dir,'.git','shallow'),cleanTip+'\n');
     await assert.rejects(scanGitIntegrity({repository:dir,head:cleanTip}),/Incomplete history/);
     console.log('OK git-integrity.test.js');
