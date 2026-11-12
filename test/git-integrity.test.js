@@ -34,6 +34,11 @@ const {scanGitIntegrity}=require('../src/git-integrity');
     assert(JSON.parse(cli.stdout).findings.length>0,'CLI must report the detected historical injection');
     await assert.rejects(scanGitIntegrity({repository:dir,head:'--all'}),/exact head SHA/);
     await assert.rejects(scanGitIntegrity({repository:dir,head:cleanTip,base:'a'.repeat(40)}));
+    fs.writeFileSync(path.join(dir,'postcss.config.js'),'module.exports={name:"'+'x'.repeat(1200)+'"};\n');
+    git('add','.');git('commit','-m','strict configuration fixture');
+    const strict=await scanGitIntegrity({repository:dir,head:git('rev-parse','HEAD'),base:cleanTip});
+    assert(strict.findings.some(f=>f.rule==='oversized-source-line'),
+      'trusted Git scan must preserve existing strict configuration checks');
     fs.writeFileSync(path.join(dir,'.git','shallow'),cleanTip+'\n');
     await assert.rejects(scanGitIntegrity({repository:dir,head:cleanTip}),/Incomplete history/);
     console.log('OK git-integrity.test.js');

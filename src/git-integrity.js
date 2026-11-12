@@ -1,6 +1,7 @@
 const { execFileSync, spawn } = require('node:child_process');
 const { createHash } = require('node:crypto');
-const { findIntegrityContentMatches } = require('./structural');
+const { findIntegrityContentMatches, findSuspiciousContentMatches,
+  isStrictContentPath, isSuspiciousContentPath } = require('./structural');
 
 // Exact historical detector source, reviewed as comments quoting an indicator.
 // Neither a path exemption nor candidate-controlled configuration may skip code.
@@ -35,11 +36,16 @@ async function scanGitIntegrity({ repository, head, base = '' }) {
   const ids = new Set(git(['rev-list','--objects',head,...(base?['^'+base]:[])])
     .split('\n').filter(Boolean).map(line=>line.split(' ')[0]));
   const submodules = [];
+  const headPaths = new Map();
   // Always inspect the full resulting tree, including reused existing blobs.
   for (const entry of git(['ls-tree','-r','-z',head]).split('\0').filter(Boolean)) {
     const match = /^(\d+) (\w+) ([a-f0-9]{40})\t/.exec(entry);
     if (!match) throw new Error('Malformed tree entry');
-    if (match[2] === 'blob') ids.add(match[3]);
+    if (match[2] === 'blob') {
+      ids.add(match[3]);
+      if (!headPaths.has(match[3])) headPaths.set(match[3], []);
+      headPaths.get(match[3]).push(entry.slice(match[0].length));
+    }
     if (match[1] === '160000') submodules.push({commit:match[3],path:entry.slice(match[0].length)});
   }
   if (ids.size > 200000) throw new Error('Object budget exceeded; no successful verdict');
@@ -85,7 +91,10 @@ async function scanGitIntegrity({ repository, head, base = '' }) {
           result.text++;
           const digest=createHash('sha256').update(body).digest('hex');
           if(REVIEWED_BLOBS.get(pending.oid)===digest)result.reviewed++;
-          else for(const match of findIntegrityContentMatches(body.toString('utf8'))) {
+          else for(const match of (headPaths.get(pending.oid)||[]).some(file=>
+            isSuspiciousContentPath(file)&&isStrictContentPath(file))
+            ? findSuspiciousContentMatches(body.toString('utf8'))
+            : findIntegrityContentMatches(body.toString('utf8'))) {
             result.findings.push({blob:pending.oid,rule:match.code,line:body.toString('utf8').slice(0,match.index).split('\n').length});
           }
         }

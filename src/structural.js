@@ -1539,6 +1539,7 @@ function flowStyleActionRefs(source) {
 
 module.exports = {
   isSuspiciousContentPath,
+  isStrictContentPath,
   // Exported for tests: the executable-position scan is the security boundary.
   workflowExecutableUses,
   DEFAULT_CONTROL_PLANE_PATHS,
